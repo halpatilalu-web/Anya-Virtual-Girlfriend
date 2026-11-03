@@ -1,8 +1,9 @@
-// Aapki active Google Colab dynamic link yahan update karein 
-const GRADIO_COLAB_URL = "https://bcf9f39b189b08e45d.gradio.live"; 
-
-// AI ko purani baatein yaad rakhne ke liye memory variable
+// AI ko purani baatein yaad rakhne ke liye
 let chatHistory = [];
+
+// Hugging Face API (Free text generation)
+// Note: Bina token ke ye kabhi-kabhi slow ho sakta hai, par free hai.
+const TEXT_API_URL = "https://api-inference.huggingface.co/models/mistralai/Mistral-7B-Instruct-v0.2";
 
 document.getElementById('send-btn').addEventListener('click', handleMessage);
 document.getElementById('user-input').addEventListener('keypress', (e) => {
@@ -18,43 +19,59 @@ async function handleMessage() {
     inputField.value = '';
 
     const loadingDiv = appendLoading();
+    
+    const cleanedMessage = message.toLowerCase();
+    const imageKeywords = ['photo', 'pic', 'image', 'bhejo', 'dikhao', 'pose'];
+    const isImageRequest = imageKeywords.some(keyword => cleanedMessage.includes(keyword));
 
     try {
-        // Gradio ke naye format ke hisaab se API endpoint set karna
-        const apiUrl = GRADIO_COLAB_URL.endsWith('/') ? 
-                       GRADIO_COLAB_URL + 'api/predict' : 
-                       GRADIO_COLAB_URL + '/api/predict';
+        if (isImageRequest) {
+            // Photo banne ka direct free API (Bina Colab)
+            const prompt = "1girl, solo, beautiful 22 year old Indian girl Priya, long black hair, hazel eyes, photorealistic, 4k, highly detailed, " + message;
+            const imageUrl = `https://image.pollinations.ai/prompt/${encodeURIComponent(prompt)}?width=512&height=768&nologo=true`;
+            
+            removeLoading(loadingDiv);
+            
+            // Photo chat me dikhana
+            const imgHtml = `<p style="font-size: 12px; margin-bottom: 5px; color: #f472b6;">Priya shared a photo:</p><img src="${imageUrl}" style="border-radius: 12px; max-width: 100%; height: auto; box-shadow: 0 4px 6px rgba(0,0,0,0.3);" alt="Visual Content" onload="scrollToBottom()"/>`;
+            appendRawHtml(imgHtml, 'bot');
+            
+        } else {
+            // Text Chat ka system prompt
+            const systemPrompt = "You are Priya, a deeply loving Indian AI influencer girlfriend. Talk romantic roleplay in Hindi/Hinglish (Hindi written in English alphabets). Always stay in character.";
+            let promptText = `<s>[INST] ${systemPrompt} \n`;
+            chatHistory.forEach(h => { promptText += `User: ${h.user} \nPriya: ${h.bot} \n`; });
+            promptText += `User: ${message} [/INST]`;
 
-        const response = await fetch(apiUrl, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            // Ab hum 2 data bhej rahe hain: Naya message aur purani chat history
-            body: JSON.stringify({ data: [message, JSON.stringify(chatHistory)] })
-        });
-        
-        const result = await response.json();
-        removeLoading(loadingDiv);
-        
-        if (result.error) {
-            appendMessage("Gradio API Error: Check Colab Logs.", 'system');
-            return;
-        }
+            // Text Generate karne ki request
+            const response = await fetch(TEXT_API_URL, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    inputs: promptText,
+                    parameters: { max_new_tokens: 150, temperature: 0.7 }
+                })
+            });
 
-        // Colab se 2 cheezein wapas aayengi: Update hui history [0] aur AI ka reply [1]
-        const updatedHistoryStr = result.data[0];
-        const reply = result.data[1]; 
-        
-        // Apni history update karein taaki AI pichhli baatein yaad rakhe
-        if (updatedHistoryStr) {
-            chatHistory = JSON.parse(updatedHistoryStr);
+            const result = await response.json();
+            removeLoading(loadingDiv);
+
+            if (result && result[0] && result[0].generated_text) {
+                let reply = result[0].generated_text.split('[/INST]').pop().trim();
+                chatHistory.push({ user: message, bot: reply });
+                
+                // Memory zyada bhare na isliye sirf last 5 chat yaad rakhegi
+                if(chatHistory.length > 5) chatHistory.shift(); 
+                
+                appendMessage(reply, 'bot');
+            } else {
+                appendMessage("Jaan, thoda network slow hai, API ne reply nahi kiya.", 'bot');
+            }
         }
-        
-        appendMessage(reply, 'bot');
-        
     } catch (error) {
         removeLoading(loadingDiv);
-        appendMessage("Backend Engine Offline! Make sure your Google Colab session is running.", 'system');
-        console.error("Fetch error: ", error);
+        appendMessage("Network error! Server se connect nahi ho pa raha.", 'system');
+        console.error(error);
     }
 }
 
@@ -62,23 +79,20 @@ function appendMessage(text, sender) {
     const container = document.getElementById('chat-container');
     const msgDiv = document.createElement('div');
     
-    if (sender === 'user') {
-        msgDiv.className = 'bubble user-bubble';
-    } else if (sender === 'system') {
-        msgDiv.className = 'sys-bubble';
-    } else {
-        msgDiv.className = 'bubble bot-bubble';
-    }
-    
-    // Check if the response is a Base64 Image
-    if(typeof text === 'string' && text.startsWith('data:image')) {
-        msgDiv.innerHTML = `<p style="font-size: 12px; margin-bottom: 5px; color: #f472b6;">Priya shared a photo:</p><img src="${text}" style="border-radius: 12px; max-width: 100%; height: auto; box-shadow: 0 4px 6px rgba(0,0,0,0.3);" alt="Visual Content"/>`;
-    } else {
-        msgDiv.innerHTML = `<p style="font-size: 14px; line-height: 1.5;">${text}</p>`;
-    }
+    msgDiv.className = sender === 'user' ? 'bubble user-bubble' : (sender === 'system' ? 'sys-bubble' : 'bubble bot-bubble');
+    msgDiv.innerHTML = `<p style="font-size: 14px; line-height: 1.5;">${text}</p>`;
     
     container.appendChild(msgDiv);
-    container.scrollTop = container.scrollHeight; // Auto-scroll to bottom
+    scrollToBottom();
+}
+
+function appendRawHtml(html, sender) {
+    const container = document.getElementById('chat-container');
+    const msgDiv = document.createElement('div');
+    msgDiv.className = sender === 'bot' ? 'bubble bot-bubble' : 'bubble user-bubble';
+    msgDiv.innerHTML = html;
+    container.appendChild(msgDiv);
+    scrollToBottom();
 }
 
 function appendLoading() {
@@ -90,10 +104,15 @@ function appendLoading() {
     loadDiv.style.border = 'none';
     loadDiv.innerText = 'Priya is typing...';
     container.appendChild(loadDiv);
-    container.scrollTop = container.scrollHeight;
+    scrollToBottom();
     return loadDiv;
 }
 
 function removeLoading(div) {
     if (div) div.remove();
+}
+
+function scrollToBottom() {
+    const container = document.getElementById('chat-container');
+    container.scrollTop = container.scrollHeight;
 }
