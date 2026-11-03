@@ -1,0 +1,22 @@
+{
+  "name": "anya-virtual-girlfriend",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Priya - a single-page AI companion chat that runs on Puter.js with no API key.",
+  "type": "module",
+  "scripts": {
+    "start": "node scripts/serve.js",
+    "dev": "node scripts/serve.js",
+    "test": "node --test \"test/*.test.js\"",
+    "lint": "node scripts/lint-css.js",
+    "check": "npm run lint && npm test"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "devDependencies": {
+    "css-tree": "^3.1.0",
+    "jsdom": "^30.1.3"
+  },
+  "license": "MIT"
+}
