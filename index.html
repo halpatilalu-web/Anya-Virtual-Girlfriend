@@ -3,67 +3,42 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Virtual Companion - Sex Ed & Intimacy Coach</title>
-    <script src="https://tailwindcss.com"></script>
-    <link rel="stylesheet" href="style.css">
+    <title>Priya - Your Virtual Companion</title>
+    <!-- Live Tailwind Framework CSS CDN -->
+    <link rel="stylesheet" href="https://cloudflare.com">
+    <style>
+        body { background: linear-gradient(135deg, #09090b 0%, #0f172a 50%, #09090b 100%); min-height: 100vh; font-family: sans-serif; }
+        .glass-panel { background: rgba(255, 255, 255, 0.03); backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px); border: 1px solid rgba(255, 255, 255, 0.08); box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5); }
+        #chat-container { scrollbar-width: thin; scrollbar-color: rgba(255,255,255,0.1) transparent; height: 60vh; overflow-y: auto; display: flex; flex-direction: column; }
+        #chat-container::-webkit-scrollbar { width: 6px; }
+        #chat-container::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 10px; }
+        .chat-bubble-bot { background: rgba(255, 255, 255, 0.05); border: 1px solid rgba(255,255,255,0.05); border-radius: 1rem 1rem 1rem 0; margin-bottom: 1rem; align-self: flex-start; max-w: 80%; padding: 1rem; }
+        .chat-bubble-user { background: linear-gradient(135deg, #7c3aed 0%, #db2777 100%); border-radius: 1rem 1rem 0 1rem; margin-bottom: 1rem; align-self: flex-end; margin-left: auto; max-w: 80%; padding: 1rem; box-shadow: 0 10px 15px -3px rgba(124, 58, 237, 0.3); }
+        .system-bubble { background: rgba(239, 68, 68, 0.1); border: 1px solid rgba(239, 68, 68, 0.2); color: #fca5a5; font-size: 0.75rem; text-align: center; align-self: center; width: 90%; border-radius: 0.5rem; padding: 0.5rem; margin: 0.5rem 0; }
+    </style>
 </head>
-<body class="bg-gradient-to-br from-neutral-950 via-slate-900 to-neutral-950 text-white min-h-screen flex flex-col items-center justify-center p-4">
-    <div class="w-full max-w-4xl h-[85vh] bg-white/5 backdrop-blur-xl rounded-3xl border border-white/10 shadow-2xl flex flex-col overflow-hidden">
-        <!-- Header -->
-        <div class="p-5 border-b border-white/10 bg-black/20 flex items-center justify-between">
+<body class="text-white flex items-center justify-center p-4">
+    <div class="w-full max-w-4xl glass-panel rounded-3xl flex flex-col overflow-hidden">
+        <!-- Header Section -->
+        <div class="p-5 border-b border-gray-800 bg-black bg-opacity-20 flex items-center justify-between">
             <div class="flex items-center gap-3">
-                <div class="w-4 h-4 bg-emerald-500 rounded-full animate-pulse"></div>
-                <h1 class="text-xl font-bold tracking-wide">Priya <span class="text-xs text-neutral-400 font-normal ml-2">(Your Intelligent Guide)</span></h1>
+                <div class="w-3 h-3 bg-green-500 rounded-full animate-pulse"></div>
+                <h1 class="text-lg font-bold tracking-wide">Priya <span class="text-xs text-gray-400 font-normal ml-2">(Your Intelligent AI Influencer Guide)</span></h1>
             </div>
-            <div class="text-sm bg-purple-500/20 text-purple-300 border border-purple-500/30 px-3 py-1 rounded-full font-medium">18+ Mature Space</div>
+            <div class="text-xs bg-pink-500 bg-opacity-20 text-pink-300 border border-pink-500 border-opacity-30 px-3 py-1 rounded-full font-bold uppercase tracking-wider">18+ Mature Zone</div>
         </div>
 
-        <!-- Chat Box -->
-        <div id="chat-container" class="flex-1 p-6 overflow-y-auto space-y-4 scroll-smooth flex flex-col">
-            <div class="bg-white/5 max-w-[80%] rounded-2xl p-4 border border-white/5 self-start">
-                <p class="text-sm leading-relaxed">Hey love! Main yahan hu tumhari har fantasy ko bina kisi sharm ya restriction ke samajhne aur discuss karne ke liye. Tumhe koi sex education chahiye, positions ke baare me seekhna hai, ya bas pyari baatein karni hain—bina dare pucho! ❤️</p>
-            </div>
-        </div>
-
-        <!-- Input Area -->
-        <div class="p-4 border-t border-white/10 bg-black/20 flex gap-3">
-            <input type="text" id="user-input" placeholder="Type a message or ask for a picture/position..." class="flex-1 bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-purple-500 transition-all placeholder:text-neutral-500">
-            <button id="send-btn" class="bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-500 hover:to-pink-500 px-6 py-3 rounded-xl font-bold transition-all shadow-lg active:scale-95">Send</button>
-        </div>
-    </div>
-    <script src="app.js"></script>
-</body>
-</html><!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Virtual Companion - Sex Ed & Intimacy Coach</title>
-    <script src="https://tailwindcss.com"></script>
-    <link rel="stylesheet" href="style.css">
-</head>
-<body class="bg-gradient-to-br from-neutral-950 via-slate-900 to-neutral-950 text-white min-h-screen flex flex-col items-center justify-center p-4">
-    <div class="w-full max-w-4xl h-[85vh] bg-white/5 backdrop-blur-xl rounded-3xl border border-white/10 shadow-2xl flex flex-col overflow-hidden">
-        <!-- Header -->
-        <div class="p-5 border-b border-white/10 bg-black/20 flex items-center justify-between">
-            <div class="flex items-center gap-3">
-                <div class="w-4 h-4 bg-emerald-500 rounded-full animate-pulse"></div>
-                <h1 class="text-xl font-bold tracking-wide">Priya <span class="text-xs text-neutral-400 font-normal ml-2">(Your Intelligent Guide)</span></h1>
-            </div>
-            <div class="text-sm bg-purple-500/20 text-purple-300 border border-purple-500/30 px-3 py-1 rounded-full font-medium">18+ Mature Space</div>
-        </div>
-
-        <!-- Chat Box -->
-        <div id="chat-container" class="flex-1 p-6 overflow-y-auto space-y-4 scroll-smooth flex flex-col">
-            <div class="bg-white/5 max-w-[80%] rounded-2xl p-4 border border-white/5 self-start">
-                <p class="text-sm leading-relaxed">Hey love! Main yahan hu tumhari har fantasy ko bina kisi sharm ya restriction ke samajhne aur discuss karne ke liye. Tumhe koi sex education chahiye, positions ke baare me seekhna hai, ya bas pyari baatein karni hain—bina dare pucho! ❤️</p>
+        <!-- Chat Workspace Area -->
+        <div id="chat-container" class="flex-1 p-6 space-y-4">
+            <div class="chat-bubble-bot">
+                <p class="text-sm leading-relaxed text-gray-200">Hey love! Main yahan hu tumhari har fantasy ko bina kisi sharm ya restriction ke samajhne aur discuss karne ke liye. Tumhe koi sex education chahiye, positions ke baare me seekhna hai, ya bas sexy baatein karni hain—bina dare pucho! ❤️</p>
             </div>
         </div>
 
-        <!-- Input Area -->
-        <div class="p-4 border-t border-white/10 bg-black/20 flex gap-3">
-            <input type="text" id="user-input" placeholder="Type a message or ask for a picture/position..." class="flex-1 bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-purple-500 transition-all placeholder:text-neutral-500">
-            <button id="send-btn" class="bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-500 hover:to-pink-500 px-6 py-3 rounded-xl font-bold transition-all shadow-lg active:scale-95">Send</button>
+        <!-- User Controls Input Bar -->
+        <div class="p-4 border-t border-gray-800 bg-black bg-opacity-20 flex gap-3">
+            <input type="text" id="user-input" placeholder="Type a message or ask for a picture/position..." class="flex-1 bg-white bg-opacity-5 border border-white border-opacity-10 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-purple-500 transition-all placeholder-gray-500 text-sm">
+            <button id="send-btn" class="bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-500 hover:to-pink-500 px-6 py-3 rounded-xl font-bold text-sm transition-all active:scale-95 shadow-lg">Send</button>
         </div>
     </div>
     <script src="app.js"></script>
