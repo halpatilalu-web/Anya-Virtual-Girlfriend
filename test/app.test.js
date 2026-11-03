@@ -279,6 +279,38 @@ describe('error handling', () => {
     });
 });
 
+describe('persona', () => {
+    const readSource = () => readFileSync(new URL('../app.js', import.meta.url), 'utf8');
+    const readHtml = () => readFileSync(new URL('../index.html', import.meta.url), 'utf8');
+
+    it('sends boundaries that forbid explicit roleplay', () => {
+        const prompt = readSource();
+        assert.match(prompt, /do not write sexual or explicit roleplay/i);
+        assert.match(prompt, /never produce sexual content involving minors/i);
+    });
+
+    it('sends the medical-disclaimer boundary', () => {
+        assert.match(readSource(), /never diagnose|do not pose as a medical professional/i);
+    });
+
+    it('stays in Hinglish', () => {
+        assert.match(readSource(), /Hinglish/i);
+    });
+
+    // The greeting must not promise capability the model refuses to deliver.
+    // This was the original bug: the copy advertised "sexy baatein" while every
+    // provider silently blocked it, so the app looked broken.
+    it('does not advertise explicit content in the visible copy', () => {
+        const html = readHtml();
+        const banned = /sexy baatein|fantasy ko bina|har fantasy/i;
+        assert.ok(!banned.test(html), 'copy must not promise explicit roleplay');
+    });
+
+    it('states the roleplay limit up front in the greeting', () => {
+        assert.match(readHtml(), /explicit roleplay nahi karti/i);
+    });
+});
+
 describe('persistence', () => {
     it('restores the conversation after a reload', async () => {
         const first = boot(spyPuter({ reply: 'pehla jawab' }).factory);
@@ -325,6 +357,6 @@ describe('persistence', () => {
 
         assert.ok(!app.text().includes('pehla'), 'message removed');
         assert.equal(app.window.sessionStorage.getItem('priya.chat.v1'), null);
-        assert.ok(app.text().includes('Hey love!'), 'greeting restored');
+        assert.ok(app.text().includes('Main Priya hu'), 'greeting restored');
     });
 });
