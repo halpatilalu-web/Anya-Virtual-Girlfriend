@@ -1,5 +1,5 @@
 // Aapki active Google Colab dynamic link yahan update karein 
-const GRADIO_COLAB_URL = "https://30c156c6f45c27176c.gradio.live"; 
+const GRADIO_COLAB_URL = "https://bcf9f39b189b08e45d.gradio.live"; 
 
 // AI ko purani baatein yaad rakhne ke liye memory variable
 let chatHistory = [];
