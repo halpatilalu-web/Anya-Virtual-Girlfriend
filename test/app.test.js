@@ -279,6 +279,200 @@ describe('error handling', () => {
     });
 });
 
+describe('long-term memory', () => {
+    const systemOf = (spy, i = 0) => spy.calls.chat[i].messages[0].content;
+
+    it('teaches the model the marker format', async () => {
+        const spy = spyPuter();
+        const app = boot(spy.factory);
+        await app.send('hi');
+
+        const prompt = systemOf(spy);
+        assert.match(prompt, /\[\[remember:/);
+        assert.match(prompt, /\[\[mood:/);
+    });
+
+    it('stores a fact the model asks to remember and hides the marker', async () => {
+        const app = boot(spyPuter({ reply: 'Yaad rakhungi jaan. [[remember: He is an engineering student]]' }).factory);
+        await app.send('main engineering student hu');
+
+        const transcript = app.document.getElementById('chat-container').textContent;
+        assert.ok(!transcript.includes('[['), 'marker must never render');
+        assert.ok(transcript.includes('Yaad rakhungi'), 'reply text kept');
+
+        const stored = JSON.parse(app.window.localStorage.getItem('priya.memory.v1'));
+        assert.equal(stored.facts.length, 1);
+        assert.match(stored.facts[0].text, /engineering student/);
+    });
+
+    it('replays remembered facts into the next system prompt', async () => {
+        const spy = spyPuter({ reply: 'Got it. [[remember: He loves biryani]]' });
+        const app = boot(spy.factory);
+        await app.send('mujhe biryani pasand hai');
+        await app.send('kya haal');
+
+        assert.match(systemOf(spy, 1), /He loves biryani/);
+    });
+
+    it('does not store the same fact twice', async () => {
+        const app = boot(spyPuter({ reply: 'ok [[remember: He loves biryani]]' }).factory);
+        await app.send('a');
+        await app.send('b');
+
+        const stored = JSON.parse(app.window.localStorage.getItem('priya.memory.v1'));
+        assert.equal(stored.facts.length, 1);
+    });
+
+    it('records a mood change', async () => {
+        const app = boot(spyPuter({ reply: 'Hmph. [[mood: sulky]]' }).factory);
+        await app.send('sorry, busy tha');
+
+        const stored = JSON.parse(app.window.localStorage.getItem('priya.memory.v1'));
+        assert.equal(stored.mood, 'sulky');
+    });
+
+    it('ignores an invalid mood value but strips the marker', async () => {
+        const app = boot(spyPuter({ reply: 'theek hai [[mood: furious]]' }).factory);
+        await app.send('hi');
+
+        const transcript = app.document.getElementById('chat-container').textContent;
+        assert.ok(!transcript.includes('[[['), 'marker stripped');
+        assert.ok(!transcript.includes('mood:'), 'marker stripped');
+        const stored = JSON.parse(app.window.localStorage.getItem('priya.memory.v1'));
+        assert.notEqual(stored.mood, 'furious');
+    });
+
+    it('survives across reloads and shows what she knows', async () => {
+        const first = boot(spyPuter({ reply: 'ok [[remember: He works nights]]' }).factory);
+        await first.send('main night shift karta hu');
+        const saved = first.window.localStorage.getItem('priya.memory.v1');
+
+        const spy = spyPuter();
+        const reloaded = boot((window) => {
+            window.localStorage.setItem('priya.memory.v1', saved);
+            return spy.factory(window);
+        });
+
+        await reloaded.send('hi');
+        assert.match(systemOf(spy), /He works nights/);
+
+        reloaded.document.getElementById('memory-btn').click();
+        const panel = reloaded.document.getElementById('memory-list').textContent;
+        assert.match(panel, /night shift|works nights/);
+    });
+
+    it('lets the user delete a single fact', async () => {
+        const app = boot(spyPuter({ reply: 'ok [[remember: He hates crowds]]' }).factory);
+        await app.send('bhide me nahi jaata');
+
+        app.document.getElementById('memory-btn').click();
+        app.document.querySelector('.memory-del').click();
+
+        const stored = JSON.parse(app.window.localStorage.getItem('priya.memory.v1'));
+        assert.equal(stored.facts.length, 0);
+    });
+
+    it('forget-all wipes memory and transcript', async () => {
+        const app = boot(spyPuter({ reply: 'ok [[remember: He is 24]]' }).factory);
+        await app.send('main 24 saal ka hu');
+
+        app.document.getElementById('memory-forget').click();
+        await new Promise((r) => setTimeout(r, 20));
+
+        const stored = JSON.parse(app.window.localStorage.getItem('priya.memory.v1'));
+        assert.equal(stored.facts.length, 0, 'facts gone');
+        assert.equal(stored.name, '', 'name gone');
+        assert.ok(!app.document.getElementById('chat-container').textContent.includes('24'), 'transcript cleared');
+    });
+
+    it('degrades safely when localStorage is unavailable', async () => {
+        const app = boot(spyPuter().factory);
+        // Break storage the way a sandboxed iframe or private mode would.
+        Object.defineProperty(app.window, 'localStorage', {
+            get() { throw new Error('blocked'); },
+            configurable: true
+        });
+
+        await app.send('hi');
+        assert.ok(app.text().includes('Haan jaan'), 'chat still works');
+    });
+});
+
+describe('onboarding', () => {
+    it('asks for a name on first run', () => {
+        const app = boot(spyPuter().factory);
+        assert.equal(app.document.getElementById('onboarding').hidden, false);
+    });
+
+    it('saves the name and work, then greets by name', async () => {
+        const app = boot(spyPuter().factory);
+        app.document.getElementById('ob-name').value = 'Arjun';
+        app.document.getElementById('ob-work').value = 'engineering student hu';
+        app.document.getElementById('ob-start').click();
+        await new Promise((r) => setTimeout(r, 20));
+
+        const stored = JSON.parse(app.window.localStorage.getItem('priya.memory.v1'));
+        assert.equal(stored.name, 'Arjun');
+        assert.match(stored.facts[0].text, /engineering student/);
+
+        assert.equal(app.document.getElementById('onboarding').hidden, true);
+        assert.match(app.document.getElementById('chat-container').textContent, /Arjun/);
+    });
+
+    it('does not ask again once a name is stored', () => {
+        const spy = spyPuter();
+        const app = boot((window) => {
+            window.localStorage.setItem('priya.memory.v1', JSON.stringify({
+                name: 'Arjun', facts: [], firstSeen: Date.now(), lastSeen: Date.now(), mood: 'warm', visits: 2
+            }));
+            return spy.factory(window);
+        });
+        assert.equal(app.document.getElementById('onboarding').hidden, true);
+    });
+
+    it('can be skipped', () => {
+        const app = boot(spyPuter().factory);
+        app.document.getElementById('ob-skip').click();
+        assert.equal(app.document.getElementById('onboarding').hidden, true);
+    });
+});
+
+describe('time awareness', () => {
+    it('puts the current date, time and part of day in the prompt', async () => {
+        const spy = spyPuter();
+        const app = boot(spy.factory);
+        await app.send('hi');
+
+        const prompt = spy.calls.chat[0].messages[0].content;
+        assert.match(prompt, /Right now it is (late at night|morning|afternoon|evening|night)/);
+    });
+
+    it('tells her the relationship length', async () => {
+        const spy = spyPuter();
+        const app = boot((window) => {
+            window.localStorage.setItem('priya.memory.v1', JSON.stringify({
+                name: 'Arjun', facts: [], firstSeen: Date.now() - 6 * 86400000,
+                lastSeen: Date.now(), mood: 'warm', visits: 3
+            }));
+            return spy.factory(window);
+        });
+        await app.send('hi');
+
+        assert.match(spy.calls.chat[0].messages[0].content, /together for 7 days/);
+    });
+
+    it('shows the day counter in the header', () => {
+        const app = boot((window) => {
+            window.localStorage.setItem('priya.memory.v1', JSON.stringify({
+                name: 'Arjun', facts: [], firstSeen: Date.now() - 4 * 86400000,
+                lastSeen: Date.now(), mood: 'warm', visits: 3
+            }));
+            return spyPuter().factory(window);
+        });
+        assert.match(app.document.getElementById('memory-btn').textContent, /Day 5/);
+    });
+});
+
 describe('voice', () => {
     it('speaks a reply when voice mode is on by default', async () => {
         const spy = spyPuter({ reply: 'Haan jaan ❤️' });
@@ -495,15 +689,19 @@ describe('persistence', () => {
         assert.ok(again.text().includes('Haan jaan'));
     });
 
-    it('clears the transcript and storage', async () => {
+    it('clears the transcript and storage via the memory panel', async () => {
         const app = boot(spyPuter().factory);
         await app.send('pehla');
         assert.ok(app.text().includes('pehla'));
 
-        app.document.getElementById('clear-btn').click();
+        // "Forget all" in the memory panel doubles as clear-chat.
+        app.document.getElementById('memory-forget').click();
         await new Promise((r) => setTimeout(r, 10));
 
-        assert.ok(!app.text().includes('pehla'), 'message removed');
+        // body.textContent also picks up hidden overlays (onboarding, memory
+        // panel), so assert on the chat transcript itself.
+        const transcript = app.document.getElementById('chat-container').textContent;
+        assert.ok(!transcript.includes('pehla'), 'message removed');
         assert.equal(app.window.sessionStorage.getItem('priya.chat.v1'), null);
         assert.ok(app.text().includes('Main Priya hu'), 'greeting restored');
     });

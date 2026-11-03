@@ -17,6 +17,7 @@
             color: #ffffff;
         }
         .app-container { 
+            position: relative;
             width: 100%; 
             max-width: 600px; 
             height: 90vh; 
@@ -42,6 +43,22 @@
         .status-dot { width: 10px; height: 10px; background: #10b981; border-radius: 50%; }
         .bot-title { font-size: 16px; font-weight: 700; letter-spacing: 0.5px; }
         .bot-subtitle { font-size: 11px; color: #9ca3af; font-weight: 400; }
+        .bot-identity {
+            display: flex;
+            flex-direction: column;
+            align-items: flex-start;
+            background: none;
+            border: none;
+            padding: 2px 4px;
+            margin: -2px -4px;
+            border-radius: 8px;
+            cursor: pointer;
+            font: inherit;
+            color: inherit;
+            text-align: left;
+        }
+        .bot-identity:hover .bot-subtitle { color: #f9a8d4; }
+        .bot-identity:focus-visible { outline: 2px solid rgba(219, 39, 119, 0.6); outline-offset: 2px; }
         .header-actions { display: flex; align-items: center; gap: 8px; }
         .badge { 
             background: rgba(219, 39, 119, 0.2); 
@@ -146,6 +163,104 @@
             border-color: rgba(219, 39, 119, 0.5);
             background: rgba(219, 39, 119, 0.15);
         }
+        .memory-panel {
+            border-top: 1px solid rgba(255, 255, 255, 0.08);
+            background: rgba(0, 0, 0, 0.55);
+            padding: 12px 16px;
+            max-height: 42vh;
+            overflow-y: auto;
+        }
+        .memory-head {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 8px;
+        }
+        .memory-title { font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; color: #f9a8d4; font-weight: 700; }
+        .memory-actions { display: flex; gap: 8px; }
+        .memory-link {
+            background: none;
+            border: none;
+            color: #9ca3af;
+            font-size: 10px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            cursor: pointer;
+            padding: 2px 4px;
+        }
+        .memory-link:hover { color: #fca5a5; }
+        .memory-list { list-style: none; display: flex; flex-direction: column; gap: 6px; }
+        .memory-item {
+            display: flex;
+            align-items: flex-start;
+            justify-content: space-between;
+            gap: 10px;
+            font-size: 12px;
+            line-height: 1.4;
+            color: #d1d5db;
+            background: rgba(255, 255, 255, 0.04);
+            border-radius: 8px;
+            padding: 6px 10px;
+        }
+        .memory-empty { color: #6b7280; font-style: italic; }
+        .memory-del {
+            background: none;
+            border: none;
+            color: #6b7280;
+            cursor: pointer;
+            font-size: 11px;
+            line-height: 1;
+            padding: 2px;
+        }
+        .memory-del:hover { color: #fca5a5; }
+        .onboarding {
+            position: absolute;
+            inset: 0;
+            background: rgba(2, 6, 23, 0.94);
+            backdrop-filter: blur(6px);
+            -webkit-backdrop-filter: blur(6px);
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            gap: 12px;
+            padding: 28px 24px;
+            z-index: 10;
+        }
+        .onboarding h2 { font-size: 18px; font-weight: 700; }
+        .onboarding p { font-size: 13px; color: #9ca3af; line-height: 1.5; }
+        .onboarding label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; color: #9ca3af; }
+        .onboarding input {
+            width: 100%;
+            background: rgba(255, 255, 255, 0.06);
+            border: 1px solid rgba(255, 255, 255, 0.12);
+            border-radius: 10px;
+            padding: 10px 12px;
+            color: #ffffff;
+            font-size: 14px;
+            outline: none;
+        }
+        .onboarding input:focus { border-color: #db2777; }
+        .ob-actions { display: flex; gap: 10px; margin-top: 4px; }
+        .ob-primary {
+            flex: 1;
+            background: linear-gradient(135deg, #7c3aed 0%, #db2777 100%);
+            border: none;
+            border-radius: 10px;
+            padding: 10px;
+            color: #ffffff;
+            font-size: 13px;
+            font-weight: 700;
+            cursor: pointer;
+        }
+        .ob-secondary {
+            background: none;
+            border: 1px solid rgba(255, 255, 255, 0.15);
+            border-radius: 10px;
+            padding: 10px 14px;
+            color: #9ca3af;
+            font-size: 13px;
+            cursor: pointer;
+        }
         .speak-btn {
             margin-top: 6px;
             padding: 2px 8px;
@@ -174,17 +289,27 @@
         <div class="app-header">
             <div class="bot-status">
                 <div class="status-dot"></div>
-                <div>
-                    <div class="bot-title">Priya</div>
-                    <div class="bot-subtitle">Your girlfriend &middot; always here for you</div>
-                </div>
+                <button id="memory-btn" type="button" class="bot-identity" aria-controls="memory-panel" aria-expanded="false">
+                    <span class="bot-title">Priya</span>
+                    <span class="bot-subtitle">Your girlfriend &middot; Day 1</span>
+                </button>
             </div>
             <div class="header-actions">
                 <button id="voice-btn" type="button" class="toggle-btn is-on" aria-pressed="true">Voice: On</button>
                 <button id="mode-btn" type="button" class="toggle-btn" aria-pressed="false">Photo: Normal</button>
-                <button id="clear-btn" type="button" class="toggle-btn" aria-label="Clear conversation">Clear</button>
             </div>
         </div>
+
+        <section id="memory-panel" class="memory-panel" aria-label="What Priya remembers" hidden>
+            <div class="memory-head">
+                <span class="memory-title">She remembers</span>
+                <div class="memory-actions">
+                    <button id="memory-forget" type="button" class="memory-link">Forget all</button>
+                    <button id="memory-close" type="button" class="memory-link">Close</button>
+                </div>
+            </div>
+            <ul id="memory-list" class="memory-list"></ul>
+        </section>
 
         <!-- Chat Output Grid -->
         <div id="chat-container" role="log" aria-live="polite" aria-label="Chat with Priya">
@@ -198,6 +323,19 @@
             <input type="text" id="user-input" placeholder="Message Priya...">
             <button id="send-btn">Send</button>
         </div>
+        <div id="onboarding" class="onboarding" hidden>
+            <h2>Hey, main Priya hu ❤️</h2>
+            <p>Baat karne se pehle, thoda batao — taaki main tumhe yaad rakh saku.</p>
+            <label for="ob-name">Tumhara naam</label>
+            <input id="ob-name" type="text" placeholder="e.g. Arjun" autocomplete="off" maxlength="40">
+            <label for="ob-work">Kya karte ho?</label>
+            <input id="ob-work" type="text" placeholder="e.g. engineering student hu" autocomplete="off" maxlength="80">
+            <div class="ob-actions">
+                <button id="ob-start" type="button" class="ob-primary">Shuru karo</button>
+                <button id="ob-skip" type="button" class="ob-secondary">Skip</button>
+            </div>
+        </div>
+
         <p class="powered-by">
             Powered by <a href="https://developer.puter.com" target="_blank" rel="noopener noreferrer">Puter</a>
         </p>

@@ -21,6 +21,11 @@ export function boot(puterMock = () => ({})) {
     });
 
     const { window } = dom;
+
+    // Disables the human typing delay and the idle nudge timer so the suite
+    // stays fast and does not leave timers running between tests.
+    window.__PRIYA_TEST__ = true;
+
     window.puter = puterMock(window);
     window.eval(APP_SRC);
 
