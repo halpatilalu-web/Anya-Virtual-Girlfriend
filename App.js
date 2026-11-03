@@ -26,7 +26,7 @@ async function handleMessage() {
         const result = await response.json();
         removeLoading(loadingDiv);
         
-        const reply = result.data[0]; 
+        const reply = result.data[0]; // Gradio outputs strictly inside a data array
         appendMessage(reply, 'bot');
         
     } catch (error) {
@@ -49,7 +49,7 @@ function appendMessage(text, sender) {
     
     // Check if the response is a Base64 Image
     if(text.startsWith('data:image')) {
-        msgDiv.innerHTML = `<p class="text-sm mb-1 text-pink-300">Priya shared a photo:</p><img src="${text}" class="rounded-xl max-w-full h-auto shadow-md" alt="Visual Concept"/>`;
+        msgDiv.innerHTML = `<p class="text-sm mb-1 text-pink-300">Priya shared a photo:</p><img src="${text}" class="rounded-xl max-w-full h-auto shadow-md" alt="Visual Content"/>`;
     } else {
         msgDiv.innerHTML = `<p class="text-sm leading-relaxed">${text}</p>`;
     }
