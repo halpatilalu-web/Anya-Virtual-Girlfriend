@@ -1,5 +1,5 @@
-// Aapki active Google Colab dynamic link automatic mapped hai
-const GRADIO_COLAB_URL = "https://gradio.live"; 
+// Aapki active Google Colab dynamic link yahan properly mapped hai
+const GRADIO_COLAB_URL = "https://f705a551914c530817.gradio.live/api/predict"; 
 
 document.getElementById('send-btn').addEventListener('click', handleMessage);
 document.getElementById('user-input').addEventListener('keypress', (e) => {
@@ -48,7 +48,7 @@ function appendMessage(text, sender) {
     }
     
     // Check if the response is a Base64 Image
-    if(text.startsWith('data:image')) {
+    if(typeof text === 'string' && text.startsWith('data:image')) {
         msgDiv.innerHTML = `<p class="text-sm mb-1 text-pink-300">Priya shared a photo:</p><img src="${text}" class="rounded-xl max-w-full h-auto shadow-md" alt="Visual Content"/>`;
     } else {
         msgDiv.innerHTML = `<p class="text-sm leading-relaxed">${text}</p>`;
