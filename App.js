@@ -1,4 +1,4 @@
-// ⚠️ MANDATORY STEP: Google Colab run karke jo dynamic public .gradio.live link milti hai use har baar yahan update karein.
+// Aapki active Google Colab dynamic link automatic mapped hai
 const GRADIO_COLAB_URL = "https://gradio.live"; 
 
 document.getElementById('send-btn').addEventListener('click', handleMessage);
@@ -26,13 +26,12 @@ async function handleMessage() {
         const result = await response.json();
         removeLoading(loadingDiv);
         
-        // Output parse system
         const reply = result.data[0]; 
         appendMessage(reply, 'bot');
         
     } catch (error) {
         removeLoading(loadingDiv);
-        appendMessage("Backend Offline! Google Colab par backend run karke check karein ki kya dynamic public url app.js me successfully updated hai ya nahi.", 'system');
+        appendMessage("Backend Engine Offline! Make sure your Google Colab session is running.", 'system');
     }
 }
 
@@ -41,18 +40,18 @@ function appendMessage(text, sender) {
     const msgDiv = document.createElement('div');
     
     if (sender === 'user') {
-        msgDiv.className = 'chat-bubble-user';
+        msgDiv.className = 'bubble user-bubble';
     } else if (sender === 'system') {
-        msgDiv.className = 'system-bubble';
+        msgDiv.className = 'sys-bubble';
     } else {
-        msgDiv.className = 'chat-bubble-bot';
+        msgDiv.className = 'bubble bot-bubble';
     }
     
-    // Auto engine checks if response payload maps down clean base64 image data blocks
-    if(text.startsWith('data:image') || text.startsWith('http://') || text.startsWith('https://')) {
-        msgDiv.innerHTML = `<img src="${text}" class="rounded-xl max-w-full h-auto mt-2 border border-white border-opacity-10 shadow-lg" alt="AI Generated Image Layer"/>`;
+    // Check if the response is a Base64 Image
+    if(text.startsWith('data:image')) {
+        msgDiv.innerHTML = `<p class="text-sm mb-1 text-pink-300">Priya shared a photo:</p><img src="${text}" class="rounded-xl max-w-full h-auto shadow-md" alt="Visual Concept"/>`;
     } else {
-        msgDiv.innerHTML = `<p class="text-sm leading-relaxed text-gray-200">${text}</p>`;
+        msgDiv.innerHTML = `<p class="text-sm leading-relaxed">${text}</p>`;
     }
     
     container.appendChild(msgDiv);
@@ -63,7 +62,7 @@ function appendLoading() {
     const container = document.getElementById('chat-container');
     const loadDiv = document.createElement('div');
     loadDiv.className = 'text-xs text-gray-500 animate-pulse p-2 self-start';
-    loadDiv.innerText = 'Priya is formatting explicit response layers...';
+    loadDiv.innerText = 'Priya is responding...';
     container.appendChild(loadDiv);
     return loadDiv;
 }
