@@ -41,7 +41,7 @@ export function boot(puterMock = () => ({})) {
 
 /** A working stubbed SDK: records every call. */
 export function spyPuter(overrides = {}) {
-    const calls = { chat: [], txt2img: [] };
+    const calls = { chat: [], txt2img: [], txt2speech: [] };
 
     return {
         calls,
@@ -50,6 +50,14 @@ export function spyPuter(overrides = {}) {
                 chat: async (messages, options) => {
                     calls.chat.push({ messages, options });
                     return { message: { content: overrides.reply ?? 'Haan jaan ❤️' } };
+                },
+                txt2speech: async (text, options) => {
+                    calls.txt2speech.push({ text, options });
+                    // jsdom has no media pipeline; a plain object is enough for
+                    // the app's src caching by hand.
+                    const audio = window.document.createElement('audio');
+                    audio.src = 'data:audio/mp3;base64,AAAA';
+                    return audio;
                 },
                 txt2img: async (...args) => {
                     // txt2img(prompt, testMode) — capture the raw arguments so

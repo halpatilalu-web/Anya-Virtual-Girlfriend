@@ -32,7 +32,30 @@ requires no API key and no backend:
 | Feature | Call |
 | --- | --- |
 | Chat replies | `puter.ai.chat(messages, { model })` |
+| Spoken replies | `puter.ai.txt2speech(text, VOICE_OPTIONS)` |
 | Photos | `puter.ai.txt2img(prompt, options)` |
+
+### Voice
+
+Replies are read aloud by default. **Voice: On/Off** in the header toggles it, and
+every bubble has a small ▶ button to replay just that message.
+
+`VOICE_OPTIONS` uses AWS Polly with `language: 'en-IN'`, `voice: 'Kajal'` and
+`engine: 'neural'`. The Indian English locale matters: with `en-US`, model names
+and Hindi words come out mangled in a foreign accent. `neural` is noticeably more
+natural than the default `standard` engine.
+
+Audio costs the same monthly allowance as everything else, so the most recent
+reply's audio URL is cached — pressing ▶ on it again replays for free.
+
+### Photos
+
+**Photo: Normal / Styled** in the header switches the prompt style for the next
+photo only. Normal is a plain portrait. Styled adds a fashion-editorial prompt
+(golden-hour light, 85mm lens, professional colour grade).
+
+Both are ordinary non-explicit portraits, and a test asserts the prompt never
+contains explicit terms.
 
 Puter uses a **User-Pays** model: each visitor covers their own usage out of the
 free monthly allowance on their own Puter account. Nothing is billed to the
@@ -118,7 +141,7 @@ to configure.
 ```bash
 npm install        # dev-only: jsdom + css-tree for the test suite
 npm run check      # CSS lint + full test suite
-npm test           # 59 tests: intent detection, chat, images, XSS, errors, persistence, server
+npm test           # 69 tests: intent detection, chat, images, XSS, errors, persistence, server
 npm run lint       # validates every CSS declaration in index.html
 ```
 
