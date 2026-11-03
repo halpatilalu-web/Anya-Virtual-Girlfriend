@@ -32,16 +32,17 @@
         }
         .app-header { 
             padding: 16px 20px; 
-            border-b: 1px solid rgba(255, 255, 255, 0.08); 
+            border-bottom: 1px solid rgba(255, 255, 255, 0.08); 
             background: rgba(0, 0, 0, 0.3); 
             display: flex; 
             align-items: center; 
             justify-content: space-between; 
         }
         .bot-status { display: flex; align-items: center; gap: 10px; }
-        .status-dot { width: 10px; height: 10px; background: #10b981; rounded-radius: 50%; border-radius: 50%; }
-        .bot-title { font-size: 16px; font-weight: 700; tracking-letter: 0.5px; }
+        .status-dot { width: 10px; height: 10px; background: #10b981; border-radius: 50%; }
+        .bot-title { font-size: 16px; font-weight: 700; letter-spacing: 0.5px; }
         .bot-subtitle { font-size: 11px; color: #9ca3af; font-weight: 400; }
+        .header-actions { display: flex; align-items: center; gap: 8px; }
         .badge { 
             background: rgba(219, 39, 119, 0.2); 
             color: #f472b6; 
@@ -63,7 +64,7 @@
         }
         #chat-container::-webkit-scrollbar { width: 4px; }
         #chat-container::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 10px; }
-        .bubble { max-w: 85%; padding: 14px 16px; font-size: 14px; line-height: 1.5; }
+        .bubble { max-width: 85%; padding: 14px 16px; font-size: 14px; line-height: 1.5; }
         .bot-bubble { 
             background: rgba(255, 255, 255, 0.06); 
             border: 1px solid rgba(255, 255, 255, 0.05); 
@@ -106,7 +107,7 @@
             outline: none; 
             transition: all 0.2s; 
         }
-        #user-input:focus { border-color: #db2777; background: rgba(255, 255, 255, 0.08); }
+        #user-input:focus { border-color: #db2777; background: rgba(255, 255, 255, 0.08); outline: 2px solid rgba(219, 39, 119, 0.6); outline-offset: 2px; }
         #send-btn { 
             background: linear-gradient(135deg, #7c3aed 0%, #db2777 100%); 
             border: none; 
@@ -120,7 +121,31 @@
             box-shadow: 0 4px 12px rgba(219, 39, 119, 0.3);
         }
         #send-btn:active { transform: scale(0.96); }
-        img { max-width: 100%; border-radius: 12px; margin-top: 8px; border: 1px solid rgba(255,255,255,0.1); }
+        .bubble-text { font-size: 14px; line-height: 1.5; }
+        .img-caption { font-size: 12px; margin-bottom: 8px; color: #f472b6; }
+        .chat-image { display: block; max-width: 100%; height: auto; border-radius: 12px; border: 1px solid rgba(255, 255, 255, 0.1); box-shadow: 0 4px 6px rgba(0, 0, 0, 0.3); }
+        .img-failed { font-size: 13px; color: #fca5a5; }
+        .typing-indicator { background: transparent; border: none; color: #9ca3af; }
+        #clear-btn {
+            background: rgba(255, 255, 255, 0.06);
+            border: 1px solid rgba(255, 255, 255, 0.12);
+            border-radius: 9999px;
+            padding: 4px 12px;
+            color: #9ca3af;
+            font-size: 10px;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        #clear-btn:hover:not(:disabled) { color: #ffffff; border-color: rgba(255, 255, 255, 0.25); }
+        #clear-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+        #send-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+        #user-input:disabled { opacity: 0.6; }
+        .powered-by { padding: 10px 16px; font-size: 11px; color: #6b7280; text-align: center; background: rgba(0, 0, 0, 0.4); border-top: 1px solid rgba(255, 255, 255, 0.06); }
+        .powered-by a { color: #9ca3af; text-decoration: none; }
+        .powered-by a:hover { color: #f472b6; }
     </style>
 </head>
 <body>
@@ -135,12 +160,15 @@
                     <div class="bot-subtitle">Your Intelligent AI Influencer Guide</div>
                 </div>
             </div>
-            <div class="badge">18+ Mature Zone</div>
+            <div class="header-actions">
+                <div class="badge">18+ Mature Zone</div>
+                <button id="clear-btn" type="button" aria-label="Clear conversation">Clear</button>
+            </div>
         </div>
 
         <!-- Chat Output Grid -->
-        <div id="chat-container">
-            <div class="bubble bot-bubble">
+        <div id="chat-container" role="log" aria-live="polite" aria-label="Chat with Priya">
+            <div class="bubble bot-bubble" data-greeting>
                 Hey love! Main yahan hu tumhari har fantasy ko bina kisi sharm ya restriction ke samajhne aur discuss karne ke liye. Tumhe koi sex education chahiye, positions ke baare me seekhna hai, ya bas sexy baatein karni hain—bina dare pucho! ❤️
             </div>
         </div>
@@ -150,8 +178,13 @@
             <input type="text" id="user-input" placeholder="Type a message or ask for a picture/position...">
             <button id="send-btn">Send</button>
         </div>
+        <p class="powered-by">
+            Powered by <a href="https://developer.puter.com" target="_blank" rel="noopener noreferrer">Puter</a>
+        </p>
     </div>
 
+    <!-- Puter.js: no API key. Must be served over http:// (not file://) -->
+    <script src="https://js.puter.com/v2/"></script>
     <script src="app.js"></script>
 </body>
 </html>
