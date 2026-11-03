@@ -1,9 +1,4 @@
-// AI ko purani baatein yaad rakhne ke liye
 let chatHistory = [];
-
-// Hugging Face API (Free text generation)
-// Note: Bina token ke ye kabhi-kabhi slow ho sakta hai, par free hai.
-const TEXT_API_URL = "https://api-inference.huggingface.co/models/mistralai/Mistral-7B-Instruct-v0.2";
 
 document.getElementById('send-btn').addEventListener('click', handleMessage);
 document.getElementById('user-input').addEventListener('keypress', (e) => {
@@ -26,51 +21,55 @@ async function handleMessage() {
 
     try {
         if (isImageRequest) {
-            // Photo banne ka direct free API (Bina Colab)
-            const prompt = "1girl, solo, beautiful 22 year old Indian girl Priya, long black hair, hazel eyes, photorealistic, 4k, highly detailed, " + message;
-            const imageUrl = `https://image.pollinations.ai/prompt/${encodeURIComponent(prompt)}?width=512&height=768&nologo=true`;
+            // Photo banane ke liye Pollinations API (No CORS issue)
+            const prompt = "1girl, solo, beautiful 22 year old Indian girl Priya, long black hair, hazel eyes, photorealistic, highly detailed, " + message;
+            const randomSeed = Math.floor(Math.random() * 100000);
+            const imageUrl = `https://image.pollinations.ai/prompt/${encodeURIComponent(prompt)}?width=512&height=768&nologo=true&seed=${randomSeed}`;
             
             removeLoading(loadingDiv);
             
-            // Photo chat me dikhana
             const imgHtml = `<p style="font-size: 12px; margin-bottom: 5px; color: #f472b6;">Priya shared a photo:</p><img src="${imageUrl}" style="border-radius: 12px; max-width: 100%; height: auto; box-shadow: 0 4px 6px rgba(0,0,0,0.3);" alt="Visual Content" onload="scrollToBottom()"/>`;
             appendRawHtml(imgHtml, 'bot');
             
         } else {
-            // Text Chat ka system prompt
-            const systemPrompt = "You are Priya, a deeply loving Indian AI influencer girlfriend. Talk romantic roleplay in Hindi/Hinglish (Hindi written in English alphabets). Always stay in character.";
-            let promptText = `<s>[INST] ${systemPrompt} \n`;
-            chatHistory.forEach(h => { promptText += `User: ${h.user} \nPriya: ${h.bot} \n`; });
-            promptText += `User: ${message} [/INST]`;
+            // Chat ke liye Pollinations Text API
+            let messages = [
+                { role: 'system', content: 'You are Priya, a deeply loving Indian AI girlfriend. Reply in short Hindi/Hinglish romantic sentences (Hindi written in English alphabets). Always stay in character.' }
+            ];
+            
+            // Purani history add karna
+            chatHistory.forEach(h => {
+                messages.push({ role: 'user', content: h.user });
+                messages.push({ role: 'assistant', content: h.bot });
+            });
+            messages.push({ role: 'user', content: message });
 
-            // Text Generate karne ki request
-            const response = await fetch(TEXT_API_URL, {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
+            const response = await fetch('https://text.pollinations.ai/', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
-                    inputs: promptText,
-                    parameters: { max_new_tokens: 150, temperature: 0.7 }
+                    messages: messages,
+                    model: 'mistral'
                 })
             });
 
-            const result = await response.json();
+            if (!response.ok) throw new Error("API Blocked or Down");
+
+            const reply = await response.text();
             removeLoading(loadingDiv);
 
-            if (result && result[0] && result[0].generated_text) {
-                let reply = result[0].generated_text.split('[/INST]').pop().trim();
+            if (reply) {
                 chatHistory.push({ user: message, bot: reply });
-                
-                // Memory zyada bhare na isliye sirf last 5 chat yaad rakhegi
                 if(chatHistory.length > 5) chatHistory.shift(); 
                 
                 appendMessage(reply, 'bot');
             } else {
-                appendMessage("Jaan, thoda network slow hai, API ne reply nahi kiya.", 'bot');
+                throw new Error("Empty reply");
             }
         }
     } catch (error) {
         removeLoading(loadingDiv);
-        appendMessage("Network error! Server se connect nahi ho pa raha.", 'system');
+        appendMessage("Jaan, thoda network issue hai. Ek baar page refresh kar lo.", 'system');
         console.error(error);
     }
 }
