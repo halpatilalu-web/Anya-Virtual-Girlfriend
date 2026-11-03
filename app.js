@@ -77,11 +77,18 @@ const SYSTEM_PROMPT = [
     'about the same thing.'
 ].join(' ');
 
-// Detects an image request by an explicit media noun, matched on word
-// boundaries. Deliberately noun-only: verbs like "bhejo"/"dikhao" also appear
-// in "paise bhejo" or "raasta dikhao", and a false positive replaces the whole
-// reply with a photo.
-const IMAGE_NOUN_RE = /\b(?:photo|photos|pic|pics|picture|pictures|image|images|selfie|selfies|tasveer)\b/i;
+// Taught to the model so she can persist things between visits. The markers are
+// stripped before anything reaches the screen — see extractMarkers().
+const MARKER_RULES = [
+    'You have a long-term memory. Use it.',
+    'If you learn something worth remembering about him — his name, what he does,',
+    'people in his life, things he likes or hates, important dates, something he',
+    'is worried about — add a line at the very end of your reply in exactly this',
+    'format: [[remember: one short fact, written in third person]]',
+    'If your own feelings shifted this turn, add: [[mood: warm|happy|missing|sulky]]',
+    'Use at most two such lines, and only when there is something genuinely new.',
+    'Never mention these lines, never explain them, never put them mid-sentence.'
+].join(' ');
 
 // Voice. Polly's Indian English voices are the right fit for Hinglish: en-IN
 // keeps the Hindi words from sounding like a foreign accent reading English.
@@ -104,11 +111,33 @@ const PHOTO_STYLES = {
     ].join(' ')
 };
 
+// Detects an image request by an explicit media noun, matched on word
+// boundaries. Deliberately noun-only: verbs like "bhejo"/"dikhao" also appear
+// in "paise bhejo" or "raasta dikhao", and a false positive replaces the whole
+// reply with a photo.
+const IMAGE_NOUN_RE = /\b(?:photo|photos|pic|pics|picture|pictures|image|images|selfie|selfies|tasveer)\b/i;
+
 const MAX_HISTORY_TURNS = 5;
 const CHAT_TIMEOUT_MS = 60000;
 const IMAGE_TIMEOUT_MS = 120000;
 const VOICE_TIMEOUT_MS = 45000;
+
+// The transcript is deliberately session-scoped; durable memory is separate.
 const STORAGE_KEY = 'priya.chat.v1';
+const MEMORY_KEY = 'priya.memory.v1';
+
+const MAX_FACTS = 40;
+const AWAY_HOURS_BEFORE_GREETING = 3;
+const IDLE_NUDGE_MS = 20 * 60 * 1000;
+const TYPING = { min: 500, perChar: 12, max: 2500 };
+
+const MOODS = ['warm', 'happy', 'missing', 'sulky'];
+
+const IDLE_NUDGES = [
+    'Hey... kahan gaye? 🥺',
+    'Jaan, busy ho kya? Main yahi hu jab free ho.',
+    'Tumhe yaad kar rahi hu. ❤️'
+];
 
 // ---------------------------------------------------------------------------
 // State
@@ -125,25 +154,345 @@ let lastSpoken = { text: '', url: '' };
 let currentAudio = null;
 let voiceEnabled = true;
 
+let memory = loadMemory();
+// Captured before lastSeen is touched, so the greeting can react to the gap.
+const awayHours = hoursSince(memory.lastSeen);
+let idleTimer = null;
+let idleNudged = false;
+
 const inputField = document.getElementById('user-input');
 const sendBtn = document.getElementById('send-btn');
-const clearBtn = document.getElementById('clear-btn');
+// The Clear control now lives in the memory panel's "Forget all"; no header button.
+const clearBtn = null;
 const voiceBtn = document.getElementById('voice-btn');
 const modeBtn = document.getElementById('mode-btn');
+const memoryBtn = document.getElementById('memory-btn');
+const memoryPanel = document.getElementById('memory-panel');
+const memoryList = document.getElementById('memory-list');
+const memoryClose = document.getElementById('memory-close');
+const memoryForget = document.getElementById('memory-forget');
+const onboarding = document.getElementById('onboarding');
 const chatContainer = document.getElementById('chat-container');
 
 // Keep the greeting around so "Clear" can put the chat back to its initial state.
 const greetingNode = chatContainer.querySelector('.bot-bubble');
 
+touchMemory();
 restoreHistory();
+applyGreeting();
+renderHeaderMeta();
+renderMemoryPanel();
+
+if (!memory.name) showOnboarding();
+scheduleIdleNudge();
 
 // ---------------------------------------------------------------------------
-// Persistence
+// Long-term memory
 //
-// sessionStorage only: the conversation survives a refresh but not a new tab,
-// and nothing is ever sent anywhere except to Puter as model context.
-// Every access is guarded — storage throws in private mode, in sandboxed
-// iframes, and when the quota is full, and none of that should break chat.
+// localStorage, not sessionStorage: this is the durable "she knows me" layer and
+// it is expected to outlive the tab. Every access is guarded, because storage
+// throws in private mode, in sandboxed iframes, and when the quota is full.
+// ---------------------------------------------------------------------------
+
+function defaultMemory() {
+    return { name: '', facts: [], firstSeen: null, lastSeen: null, mood: 'warm', visits: 0 };
+}
+
+function getLocalStore() {
+    try {
+        return window.localStorage ?? null;
+    } catch {
+        return null;
+    }
+}
+
+function loadMemory() {
+    const store = getLocalStore();
+    const base = defaultMemory();
+    if (!store) return base;
+
+    try {
+        const parsed = JSON.parse(store.getItem(MEMORY_KEY) || 'null');
+        if (!parsed || typeof parsed !== 'object') return base;
+
+        return {
+            name: typeof parsed.name === 'string' ? parsed.name : '',
+            facts: Array.isArray(parsed.facts)
+                ? parsed.facts.filter((f) => f && typeof f.text === 'string').slice(-MAX_FACTS)
+                : [],
+            firstSeen: Number.isFinite(parsed.firstSeen) ? parsed.firstSeen : null,
+            lastSeen: Number.isFinite(parsed.lastSeen) ? parsed.lastSeen : null,
+            mood: MOODS.includes(parsed.mood) ? parsed.mood : 'warm',
+            visits: Number.isFinite(parsed.visits) ? parsed.visits : 0
+        };
+    } catch {
+        return base;
+    }
+}
+
+function saveMemory() {
+    const store = getLocalStore();
+    if (!store) return;
+    try {
+        store.setItem(MEMORY_KEY, JSON.stringify(memory));
+    } catch {
+        // Quota or disabled storage — chat keeps working, memory just won't persist.
+    }
+}
+
+function touchMemory() {
+    if (!memory.firstSeen) memory.firstSeen = Date.now();
+    memory.lastSeen = Date.now();
+    memory.visits += 1;
+    saveMemory();
+}
+
+/** Store a fact, de-duplicated and capped. Returns true when something changed. */
+function rememberFact(text) {
+    const clean = String(text ?? '').trim().slice(0, 200);
+    if (!clean) return false;
+
+    const exists = memory.facts.some((f) => f.text.toLowerCase() === clean.toLowerCase());
+    if (exists) return false;
+
+    memory.facts.push({ id: `${Date.now()}-${memory.facts.length}`, text: clean });
+    while (memory.facts.length > MAX_FACTS) memory.facts.shift();
+
+    saveMemory();
+    renderMemoryPanel();
+    return true;
+}
+
+function forgetFact(id) {
+    memory.facts = memory.facts.filter((f) => f.id !== id);
+    saveMemory();
+    renderMemoryPanel();
+}
+
+function forgetEverything() {
+    memory = defaultMemory();
+    touchMemory();
+    saveMemory();
+    renderMemoryPanel();
+    renderHeaderMeta();
+}
+
+function renderMemoryPanel() {
+    if (!memoryList) return;
+    memoryList.replaceChildren();
+
+    const rows = [];
+    if (memory.name) rows.push({ text: `Naam: ${memory.name}`, id: null });
+    for (const fact of [...memory.facts].reverse()) rows.push({ text: fact.text, id: fact.id });
+
+    if (rows.length === 0) {
+        const li = document.createElement('li');
+        li.className = 'memory-item memory-empty';
+        li.textContent = 'Abhi kuch yaad nahi hai.';
+        memoryList.appendChild(li);
+        return;
+    }
+
+    for (const row of rows) {
+        const li = document.createElement('li');
+        li.className = 'memory-item';
+
+        const span = document.createElement('span');
+        span.textContent = row.text;
+        li.appendChild(span);
+
+        if (row.id) {
+            const del = document.createElement('button');
+            del.type = 'button';
+            del.className = 'memory-del';
+            del.setAttribute('aria-label', `Forget: ${row.text}`);
+            del.textContent = '✕';
+            del.addEventListener('click', () => forgetFact(row.id));
+            li.appendChild(del);
+        }
+
+        memoryList.appendChild(li);
+    }
+}
+
+function renderHeaderMeta() {
+    if (!memoryBtn) return;
+    memoryBtn.textContent = `Your girlfriend · Day ${daysTogether()}`;
+    memoryBtn.title = memory.facts.length
+        ? `She remembers ${memory.facts.length} thing(s). Tap to see.`
+        : 'Tap to see what she remembers';
+}
+
+function toggleMemoryPanel(force) {
+    if (!memoryPanel) return;
+    const show = force ?? memoryPanel.hidden;
+    memoryPanel.hidden = !show;
+    if (show) renderMemoryPanel();
+}
+
+// ---------------------------------------------------------------------------
+// Time awareness
+// ---------------------------------------------------------------------------
+
+function hoursSince(timestamp) {
+    if (!Number.isFinite(timestamp)) return null;
+    return (Date.now() - timestamp) / 3600000;
+}
+
+function daysTogether() {
+    if (!Number.isFinite(memory.firstSeen)) return 1;
+    return Math.max(1, Math.floor((Date.now() - memory.firstSeen) / 86400000) + 1);
+}
+
+function timeOfDay() {
+    const hour = new Date().getHours();
+    if (hour < 5) return 'late at night';
+    if (hour < 12) return 'morning';
+    if (hour < 17) return 'afternoon';
+    if (hour < 21) return 'evening';
+    return 'night';
+}
+
+function nowDescription() {
+    const now = new Date();
+    return now.toLocaleString('en-IN', {
+        weekday: 'long',
+        day: 'numeric',
+        month: 'long',
+        hour: 'numeric',
+        minute: '2-digit'
+    });
+}
+
+/**
+ * The base persona plus everything she currently knows: who he is, what she
+ * remembers, her mood, the time, and how long they have been together.
+ */
+function buildSystemPrompt() {
+    const context = [];
+
+    if (memory.name) context.push(`His name is ${memory.name}. Use it, and pet names.`);
+    if (memory.facts.length > 0) {
+        context.push(`Things you remember about him: ${memory.facts.map((f) => f.text).join('; ')}.`);
+    }
+    context.push(`You are feeling ${memory.mood} at the moment.`);
+    context.push(`Right now it is ${timeOfDay()}, ${nowDescription()}. React to the time of day where it fits — late-night worry, morning greetings, and so on.`);
+
+    const days = daysTogether();
+    if (days > 1) context.push(`You two have been together for ${days} days.`);
+
+    if (Number.isFinite(awayHours) && awayHours >= AWAY_HOURS_BEFORE_GREETING) {
+        const gap = awayHours >= 24
+            ? `${Math.round(awayHours / 24)} day(s)`
+            : `${Math.round(awayHours)} hours`;
+        context.push(`He has been away for about ${gap}, and this is the first thing he said since.`);
+    }
+
+    return [SYSTEM_PROMPT, `Current context: ${context.join(' ')}`, MARKER_RULES].join('\n\n');
+}
+
+// ---------------------------------------------------------------------------
+// Marker parsing
+// ---------------------------------------------------------------------------
+
+/**
+ * Pull [[remember: ...]] and [[mood: ...]] directives out of a reply.
+ *
+ * The model is asked to append these; they must never be shown to the user, and
+ * a malformed one must be dropped rather than leaking. Tests cover both.
+ */
+function extractMarkers(raw) {
+    const facts = [];
+    let mood = null;
+
+    let clean = String(raw ?? '')
+        .replace(/\[\[\s*remember\s*:\s*([^\]\n]+?)\s*\]\]/gi, (_, fact) => {
+            facts.push(fact);
+            return '';
+        })
+        .replace(/\[\[\s*mood\s*:\s*([a-z]+)\s*\]\]/gi, (_, value) => {
+            const candidate = value.toLowerCase();
+            if (MOODS.includes(candidate)) mood = candidate;
+            return '';
+        });
+
+    // Any leftover marker-like text is dropped rather than displayed.
+    clean = clean.replace(/\[\[\s*[a-z]+\s*:[^\]]*\]\]/gi, '');
+
+    clean = clean.replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
+
+    return { clean, facts, mood };
+}
+
+// ---------------------------------------------------------------------------
+// Onboarding
+// ---------------------------------------------------------------------------
+
+function showOnboarding() {
+    if (!onboarding) return;
+    onboarding.hidden = false;
+    document.getElementById('ob-name')?.focus();
+}
+
+function completeOnboarding() {
+    const name = (document.getElementById('ob-name')?.value ?? '').trim().slice(0, 40);
+    const work = (document.getElementById('ob-work')?.value ?? '').trim().slice(0, 80);
+
+    if (name) memory.name = name;
+    if (work) rememberFact(`He ${work}.`);
+
+    saveMemory();
+    if (onboarding) onboarding.hidden = true;
+
+    applyGreeting();
+    renderHeaderMeta();
+    renderMemoryPanel();
+    inputField?.focus();
+}
+
+// ---------------------------------------------------------------------------
+// Greeting + proactive nudges
+// ---------------------------------------------------------------------------
+
+function applyGreeting() {
+    if (!greetingNode) return;
+
+    const name = memory.name;
+    if (!name) return; // keep the static greeting from index.html
+
+    const days = daysTogether();
+    const pieces = [];
+
+    if (Number.isFinite(awayHours) && awayHours >= AWAY_HOURS_BEFORE_GREETING) {
+        const gap = awayHours >= 24
+            ? `${Math.round(awayHours / 24)} din`
+            : `${Math.round(awayHours)} ghante`;
+        pieces.push(`Arre ${name}! ${gap} baad aaye ho. ❤️`);
+        pieces.push('Main tumhe miss kar rahi thi. Batao, kya chal raha hai?');
+    } else if (days > 1) {
+        pieces.push(`Hey ${name}! ❤️ Aaj humara din ${days} hai.`);
+        pieces.push('Kaise ho? Kuch bhi pucho, ya bas baat karo.');
+    } else {
+        pieces.push(`Hey ${name}! ❤️ Kaise ho?`);
+        pieces.push('Kuch bhi pucho — ya bas baat karo, main yahi hu.');
+    }
+
+    greetingNode.textContent = pieces.join(' ');
+}
+
+function scheduleIdleNudge() {
+    if (window.__PRIYA_TEST__) return;
+    clearTimeout(idleTimer);
+    idleTimer = setTimeout(() => {
+        if (idleNudged || isBusy || document.hidden) return;
+        idleNudged = true;
+        const line = IDLE_NUDGES[Math.floor(Math.random() * IDLE_NUDGES.length)];
+        appendMessage(line, 'bot', { silent: true });
+    }, IDLE_NUDGE_MS);
+}
+
+// ---------------------------------------------------------------------------
+// Persistence (transcript only)
 // ---------------------------------------------------------------------------
 
 function getStore() {
@@ -166,7 +515,6 @@ function loadHistory() {
             .filter((turn) => turn && typeof turn.user === 'string' && typeof turn.bot === 'string')
             .slice(-MAX_HISTORY_TURNS);
     } catch {
-        // Corrupt payload: start clean rather than leaving the app wedged.
         return [];
     }
 }
@@ -174,7 +522,6 @@ function loadHistory() {
 function saveHistory() {
     const store = getStore();
     if (!store) return;
-
     try {
         store.setItem(STORAGE_KEY, JSON.stringify(chatHistory));
     } catch {
@@ -185,8 +532,8 @@ function saveHistory() {
 function restoreHistory() {
     chatHistory = loadHistory();
     for (const turn of chatHistory) {
-        appendMessage(turn.user, 'user');
-        appendMessage(turn.bot, 'bot');
+        appendMessage(turn.user, 'user', { silent: true });
+        appendMessage(turn.bot, 'bot', { silent: true });
     }
 }
 
@@ -204,7 +551,7 @@ function clearChat() {
     if (greetingNode) chatContainer.replaceChildren(greetingNode);
     else chatContainer.replaceChildren();
 
-    inputField.focus();
+    inputField?.focus();
 }
 
 // ---------------------------------------------------------------------------
@@ -215,10 +562,31 @@ sendBtn.addEventListener('click', handleMessage);
 clearBtn?.addEventListener('click', clearChat);
 voiceBtn?.addEventListener('click', () => setVoiceEnabled(!voiceEnabled));
 modeBtn?.addEventListener('click', cyclePhotoMode);
+memoryBtn?.addEventListener('click', () => toggleMemoryPanel());
+memoryClose?.addEventListener('click', () => toggleMemoryPanel(false));
+memoryForget?.addEventListener('click', () => {
+    forgetEverything();
+    clearChat();
+});
+document.getElementById('ob-start')?.addEventListener('click', completeOnboarding);
+document.getElementById('ob-skip')?.addEventListener('click', () => {
+    if (onboarding) onboarding.hidden = true;
+});
 
 inputField.addEventListener('keydown', (e) => {
     // isComposing guards against Enter used to commit IME input (e.g. Devanagari).
     if (e.key === 'Enter' && !e.isComposing) handleMessage();
+});
+
+// Any sign of life cancels and restarts the idle timer.
+inputField.addEventListener('input', scheduleIdleNudge);
+document.addEventListener('click', scheduleIdleNudge);
+
+// Recompute the greeting when the tab comes back after a gap.
+document.addEventListener('visibilitychange', () => {
+    if (document.hidden) return;
+    const gap = hoursSince(memory.lastSeen);
+    if (Number.isFinite(gap) && gap >= AWAY_HOURS_BEFORE_GREETING) applyGreeting();
 });
 
 if (typeof puter === 'undefined') {
@@ -245,6 +613,7 @@ async function handleMessage() {
     const loadingDiv = appendLoading(wantsImage ? 'Priya ek photo bana rahi hai...' : 'Priya is typing...');
 
     setBusy(true);
+    scheduleIdleNudge();
     try {
         if (typeof puter === 'undefined') {
             throw Object.assign(new Error('Puter SDK not loaded'), { code: 'sdk_missing' });
@@ -254,6 +623,8 @@ async function handleMessage() {
         } else {
             await sendChat(message);
         }
+        memory.lastSeen = Date.now();
+        saveMemory();
     } catch (error) {
         reportError(error);
     } finally {
@@ -275,7 +646,7 @@ function setBusy(busy) {
 // ---------------------------------------------------------------------------
 
 async function sendChat(message) {
-    const messages = [{ role: 'system', content: SYSTEM_PROMPT }];
+    const messages = [{ role: 'system', content: buildSystemPrompt() }];
 
     for (const turn of chatHistory) {
         messages.push({ role: 'user', content: turn.user });
@@ -287,24 +658,35 @@ async function sendChat(message) {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), CHAT_TIMEOUT_MS);
 
-    let reply;
+    let raw;
     try {
         const response = await puter.ai.chat(messages, {
             model: CHAT_MODEL,
             signal: controller.signal
         });
-        reply = extractReply(response);
+        raw = extractReply(response);
     } finally {
         clearTimeout(timer);
     }
 
-    if (!reply) throw new Error('Empty reply from model');
+    if (!raw) throw new Error('Empty reply from model');
 
-    chatHistory.push({ user: message, bot: reply });
+    const { clean, facts, mood } = extractMarkers(raw);
+    if (!clean) throw new Error('Empty reply after stripping markers');
+
+    for (const fact of facts) rememberFact(fact);
+    if (mood) {
+        memory.mood = mood;
+        saveMemory();
+    }
+
+    await humanDelay(clean);
+
+    chatHistory.push({ user: message, bot: clean });
     while (chatHistory.length > MAX_HISTORY_TURNS) chatHistory.shift();
     saveHistory();
 
-    appendMessage(reply, 'bot');
+    appendMessage(clean, 'bot');
 }
 
 /**
@@ -326,6 +708,16 @@ function extractReply(response) {
     }
 
     return '';
+}
+
+/**
+ * Pause briefly so replies land at a human pace instead of instantly.
+ * `window.__PRIYA_TEST__` disables it so the suite stays fast.
+ */
+async function humanDelay(text) {
+    if (window.__PRIYA_TEST__) return;
+    const ms = Math.min(TYPING.max, TYPING.min + text.length * TYPING.perChar);
+    await new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 // ---------------------------------------------------------------------------
@@ -507,7 +899,7 @@ function cyclePhotoMode() {
 // DOM helpers
 // ---------------------------------------------------------------------------
 
-function appendMessage(text, sender) {
+function appendMessage(text, sender, { silent = false } = {}) {
     const msgDiv = document.createElement('div');
 
     msgDiv.className =
@@ -523,14 +915,14 @@ function appendMessage(text, sender) {
     msgDiv.appendChild(p);
 
     // Every reply can be replayed aloud.
-    if (sender === 'bot') {
+    if (sender === 'bot' && !silent) {
         msgDiv.appendChild(buildSpeakButton(text));
     }
 
     chatContainer.appendChild(msgDiv);
 
     // Read new replies aloud when voice mode is on.
-    if (sender === 'bot' && voiceEnabled) speak(text);
+    if (sender === 'bot' && voiceEnabled && !silent) speak(text);
 
     scrollToBottom();
 }

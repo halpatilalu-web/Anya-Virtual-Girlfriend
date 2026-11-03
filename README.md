@@ -35,6 +35,47 @@ requires no API key and no backend:
 | Spoken replies | `puter.ai.txt2speech(text, VOICE_OPTIONS)` |
 | Photos | `puter.ai.txt2img(prompt, options)` |
 
+### Memory
+
+Priya remembers you between visits. Memory lives in `localStorage` under
+`priya.memory.v1` — deliberately **separate** from the transcript, which stays in
+`sessionStorage` and dies with the tab.
+
+She decides what to remember. The system prompt asks her to append directives to
+her own reply:
+
+```
+[[remember: He is an engineering student]]
+[[mood: sulky]]
+```
+
+`extractMarkers()` strips these before anything reaches the screen, stores the
+fact, and updates her mood. A malformed or unknown directive is dropped rather
+than rendered — tests cover both, because a leaked `[[remember: ...]]` would look
+broken.
+
+Memory is capped at 40 facts, de-duplicated case-insensitively, and replayable
+into the next prompt. **Tap her name** in the header to open the *She remembers*
+panel: it lists every stored fact, lets you delete one at a time, and has a
+**Forget all** that wipes memory *and* transcript. That transparency is
+deliberate — you should always be able to see and delete what an app knows
+about you.
+
+Storage access is wrapped in `try/catch`: private mode, a sandboxed iframe or a
+full quota degrade to "no persistence" instead of breaking chat.
+
+### Personality & continuity
+
+| Feature | Detail |
+| --- | --- |
+| Onboarding | First run asks for your name and what you do, then saves both as memory |
+| Time awareness | Date, time, part of day and timezone are injected each turn, so she reacts to a 2am message differently from a 9am one |
+| Days together | `Day N` in the header; the prompt knows the relationship length |
+| Away greeting | Return after 3+ hours and she greets you with the gap ("6 ghante baad aaye ho") |
+| Mood | A persistent mood (`warm`, `happy`, `missing`, `sulky`) she can change herself |
+| Idle nudge | After 20 minutes of silence she sends one message — once per idle period, never while a request is in flight or the tab is hidden |
+| Typing delay | Replies are held 0.5–2.5s based on length, so they land at a human pace |
+
 ### Voice
 
 Replies are read aloud by default. **Voice: On/Off** in the header toggles it, and
@@ -141,7 +182,7 @@ to configure.
 ```bash
 npm install        # dev-only: jsdom + css-tree for the test suite
 npm run check      # CSS lint + full test suite
-npm test           # 69 tests: intent detection, chat, images, XSS, errors, persistence, server
+npm test           # 86 tests: intent detection, chat, images, XSS, errors, persistence, server
 npm run lint       # validates every CSS declaration in index.html
 ```
 
