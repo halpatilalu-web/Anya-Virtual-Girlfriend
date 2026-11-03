@@ -279,6 +279,128 @@ describe('error handling', () => {
     });
 });
 
+describe('voice', () => {
+    it('speaks a reply when voice mode is on by default', async () => {
+        const spy = spyPuter({ reply: 'Haan jaan ❤️' });
+        const app = boot(spy.factory);
+        await app.send('kaise ho');
+        await new Promise((r) => setTimeout(r, 30));
+
+        assert.equal(spy.calls.txt2speech.length, 1);
+        assert.equal(spy.calls.txt2speech[0].text, 'Haan jaan ❤️');
+    });
+
+    it('uses an Indian English neural voice, which suits Hinglish', async () => {
+        const spy = spyPuter();
+        const app = boot(spy.factory);
+        await app.send('kaise ho');
+        await new Promise((r) => setTimeout(r, 30));
+
+        const { options } = spy.calls.txt2speech[0];
+        assert.equal(options.language, 'en-IN');
+        assert.equal(options.engine, 'neural');
+        assert.equal(options.provider, 'aws-polly');
+    });
+
+    it('stays silent when voice mode is switched off', async () => {
+        const spy = spyPuter();
+        const app = boot(spy.factory);
+
+        app.document.getElementById('voice-btn').click();
+        await app.send('kaise ho');
+        await new Promise((r) => setTimeout(r, 30));
+
+        assert.equal(spy.calls.txt2speech.length, 0);
+        assert.match(app.document.getElementById('voice-btn').textContent, /Off/);
+    });
+
+    it('adds a speaker button to every reply', async () => {
+        const spy = spyPuter();
+        const app = boot(spy.factory);
+        await app.send('kaise ho');
+
+        assert.equal(app.$$('.speak-btn').length, 1);
+    });
+
+    it('replays the cached audio instead of paying for it twice', async () => {
+        const spy = spyPuter({ reply: 'Ek hi jawab' });
+        const app = boot(spy.factory);
+        await app.send('pehla');
+        await new Promise((r) => setTimeout(r, 30));
+
+        // Click the speaker on the same bubble again.
+        app.$('.speak-btn').click();
+        await new Promise((r) => setTimeout(r, 30));
+
+        assert.equal(spy.calls.txt2speech.length, 1, 'second play must not re-synthesise');
+    });
+
+    it('survives a TTS failure without breaking the chat', async () => {
+        const app = boot((window) => ({
+            ai: {
+                chat: async () => ({ message: { content: 'jawab' } }),
+                txt2img: async () => null,
+                txt2speech: async () => { throw new Error('tts down'); }
+            }
+        }));
+        await app.send('kaise ho');
+        await new Promise((r) => setTimeout(r, 40));
+
+        assert.ok(app.text().includes('jawab'), 'reply still rendered');
+        assert.equal(app.document.getElementById('send-btn').disabled, false);
+    });
+});
+
+describe('photo style', () => {
+    it('defaults to a plain portrait prompt', async () => {
+        const spy = spyPuter();
+        const app = boot(spy.factory);
+        await app.send('photo bhejo');
+
+        const { prompt } = spy.calls.txt2img[0];
+        assert.ok(!/fashion editorial/i.test(prompt), 'no styling by default');
+    });
+
+    it('adds styling after toggling the mode', async () => {
+        const spy = spyPuter();
+        const app = boot(spy.factory);
+
+        app.document.getElementById('mode-btn').click();
+        await app.send('photo bhejo');
+
+        const { prompt } = spy.calls.txt2img[0];
+        assert.match(prompt, /fashion editorial/i);
+        assert.match(prompt, /85mm lens/i);
+        assert.ok(app.text().includes('styled'), 'caption reflects the style');
+    });
+
+    it('toggles back to normal', async () => {
+        const spy = spyPuter();
+        const app = boot(spy.factory);
+        const modeBtn = app.document.getElementById('mode-btn');
+
+        modeBtn.click();
+        modeBtn.click();
+        await app.send('photo bhejo');
+
+        assert.match(modeBtn.textContent, /Normal/);
+        assert.ok(!/fashion editorial/i.test(spy.calls.txt2img[0].prompt));
+    });
+
+    it('never asks the image model for explicit content', async () => {
+        const spy = spyPuter();
+        const app = boot(spy.factory);
+        for (const mode of ['normal']) {
+            app.document.getElementById('mode-btn').click();
+        }
+        await app.send('photo bhejo');
+
+        const { prompt } = spy.calls.txt2img[0];
+        const banned = /nude|naked|nsfw|lingerie|explicit|sexy/i;
+        assert.ok(!banned.test(prompt), 'prompt must stay within policy');
+    });
+});
+
 describe('persona', () => {
     const readSource = () => readFileSync(new URL('../app.js', import.meta.url), 'utf8');
     const readHtml = () => readFileSync(new URL('../index.html', import.meta.url), 'utf8');

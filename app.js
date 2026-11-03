@@ -83,9 +83,31 @@ const SYSTEM_PROMPT = [
 // reply with a photo.
 const IMAGE_NOUN_RE = /\b(?:photo|photos|pic|pics|picture|pictures|image|images|selfie|selfies|tasveer)\b/i;
 
+// Voice. Polly's Indian English voices are the right fit for Hinglish: en-IN
+// keeps the Hindi words from sounding like a foreign accent reading English.
+// `neural` sounds markedly more natural than the default `standard` engine.
+const VOICE_OPTIONS = {
+    provider: 'aws-polly',
+    language: 'en-IN',
+    voice: 'Kajal',
+    engine: 'neural'
+};
+
+// Photo styles. Both are ordinary, non-explicit portraits; the difference is
+// styling, not content.
+const PHOTO_STYLES = {
+    normal: '',
+    stylish: [
+        'fashion editorial portrait, warm golden-hour light, soft bokeh background,',
+        'elegant saree or kurti, confident relaxed smile, shot on 85mm lens,',
+        'high detail skin texture, professional colour grade'
+    ].join(' ')
+};
+
 const MAX_HISTORY_TURNS = 5;
 const CHAT_TIMEOUT_MS = 60000;
 const IMAGE_TIMEOUT_MS = 120000;
+const VOICE_TIMEOUT_MS = 45000;
 const STORAGE_KEY = 'priya.chat.v1';
 
 // ---------------------------------------------------------------------------
@@ -95,9 +117,19 @@ const STORAGE_KEY = 'priya.chat.v1';
 let chatHistory = [];
 let isBusy = false;
 
+// 'normal' | 'stylish' — applies to the next photo request only.
+let photoMode = 'normal';
+
+// The most recent reply, kept so the speaker button can replay it.
+let lastSpoken = { text: '', url: '' };
+let currentAudio = null;
+let voiceEnabled = true;
+
 const inputField = document.getElementById('user-input');
 const sendBtn = document.getElementById('send-btn');
 const clearBtn = document.getElementById('clear-btn');
+const voiceBtn = document.getElementById('voice-btn');
+const modeBtn = document.getElementById('mode-btn');
 const chatContainer = document.getElementById('chat-container');
 
 // Keep the greeting around so "Clear" can put the chat back to its initial state.
@@ -181,6 +213,8 @@ function clearChat() {
 
 sendBtn.addEventListener('click', handleMessage);
 clearBtn?.addEventListener('click', clearChat);
+voiceBtn?.addEventListener('click', () => setVoiceEnabled(!voiceEnabled));
+modeBtn?.addEventListener('click', cyclePhotoMode);
 
 inputField.addEventListener('keydown', (e) => {
     // isComposing guards against Enter used to commit IME input (e.g. Devanagari).
@@ -299,7 +333,8 @@ function extractReply(response) {
 // ---------------------------------------------------------------------------
 
 async function sendImage(message) {
-    const prompt = `${IMAGE_PROMPT_PREFIX}, ${message}`;
+    const style = PHOTO_STYLES[photoMode] ?? '';
+    const prompt = [IMAGE_PROMPT_PREFIX, style, message].filter(Boolean).join(', ');
 
     // txt2img(prompt, testMode) — the second argument is the test-mode flag,
     // which returns a sample image without charging credits.
@@ -311,16 +346,17 @@ async function sendImage(message) {
         IMAGE_TIMEOUT_MS
     );
 
-    appendImage(generated);
+    appendImage(generated, photoMode);
 }
 
-function appendImage(generated) {
+function appendImage(generated, mode = 'normal') {
     const row = document.createElement('div');
     row.className = 'bubble bot-bubble';
 
     const caption = document.createElement('p');
     caption.className = 'img-caption';
-    caption.textContent = 'Priya shared a photo:';
+    caption.textContent =
+        mode === 'stylish' ? 'Priya shared a photo (styled):' : 'Priya shared a photo:';
 
     const img = generated instanceof HTMLImageElement ? generated : document.createElement('img');
     img.alt = 'AI generated photo of Priya';
@@ -395,6 +431,79 @@ function withTimeout(promise, ms) {
 }
 
 // ---------------------------------------------------------------------------
+// Voice
+// ---------------------------------------------------------------------------
+
+/**
+ * Read text aloud. txt2speech() returns an HTMLAudioElement, and its audio
+ * costs the same monthly allowance as everything else, so the resulting URL is
+ * cached for the most recent reply — replaying it is free.
+ */
+async function speak(text, anchor) {
+    if (!text) return;
+    if (typeof puter === 'undefined' || !puter.ai?.txt2speech) {
+        reportError(Object.assign(new Error('TTS unavailable'), { code: 'tts_missing' }));
+        return;
+    }
+
+    try {
+        let audio;
+        if (lastSpoken.text === text && lastSpoken.url) {
+            audio = new Audio(lastSpoken.url);
+        } else {
+            stopAudio();
+            anchor?.classList.add('is-loading');
+            audio = await withTimeout(puter.ai.txt2speech(text, VOICE_OPTIONS), VOICE_TIMEOUT_MS);
+
+            const src = audio?.src ?? '';
+            if (!src) throw new Error('No audio returned');
+            lastSpoken = { text, url: src };
+        }
+
+        stopAudio();
+        currentAudio = audio;
+        await audio.play();
+        anchor?.classList.remove('is-loading');
+    } catch (error) {
+        anchor?.classList.remove('is-loading');
+        reportError(error);
+    }
+}
+
+function stopAudio() {
+    if (!currentAudio) return;
+    try {
+        currentAudio.pause();
+        currentAudio.currentTime = 0;
+    } catch {
+        // Some audio elements refuse seek before metadata loads; nothing to do.
+    }
+    currentAudio = null;
+}
+
+function setVoiceEnabled(enabled) {
+    voiceEnabled = enabled;
+    if (!voiceBtn) return;
+    voiceBtn.textContent = enabled ? 'Voice: On' : 'Voice: Off';
+    voiceBtn.setAttribute('aria-pressed', String(enabled));
+    voiceBtn.classList.toggle('is-on', enabled);
+    if (!enabled) stopAudio();
+}
+
+// ---------------------------------------------------------------------------
+// Photo style
+// ---------------------------------------------------------------------------
+
+function cyclePhotoMode() {
+    photoMode = photoMode === 'normal' ? 'stylish' : 'normal';
+    if (modeBtn) {
+        modeBtn.textContent = photoMode === 'normal' ? 'Photo: Normal' : 'Photo: Styled';
+        modeBtn.setAttribute('aria-pressed', String(photoMode === 'stylish'));
+        modeBtn.classList.toggle('is-on', photoMode === 'stylish');
+    }
+}
+
+// ---------------------------------------------------------------------------
 // DOM helpers
 // ---------------------------------------------------------------------------
 
@@ -412,8 +521,28 @@ function appendMessage(text, sender) {
     p.textContent = text;
 
     msgDiv.appendChild(p);
+
+    // Every reply can be replayed aloud.
+    if (sender === 'bot') {
+        msgDiv.appendChild(buildSpeakButton(text));
+    }
+
     chatContainer.appendChild(msgDiv);
+
+    // Read new replies aloud when voice mode is on.
+    if (sender === 'bot' && voiceEnabled) speak(text);
+
     scrollToBottom();
+}
+
+function buildSpeakButton(text) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'speak-btn';
+    button.setAttribute('aria-label', 'Play this reply aloud');
+    button.textContent = '\u25B6';
+    button.addEventListener('click', () => speak(text, button));
+    return button;
 }
 
 function appendLoading(label) {

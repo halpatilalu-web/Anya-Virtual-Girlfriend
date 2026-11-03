@@ -126,7 +126,7 @@
         .chat-image { display: block; max-width: 100%; height: auto; border-radius: 12px; border: 1px solid rgba(255, 255, 255, 0.1); box-shadow: 0 4px 6px rgba(0, 0, 0, 0.3); }
         .img-failed { font-size: 13px; color: #fca5a5; }
         .typing-indicator { background: transparent; border: none; color: #9ca3af; }
-        #clear-btn {
+        .toggle-btn {
             background: rgba(255, 255, 255, 0.06);
             border: 1px solid rgba(255, 255, 255, 0.12);
             border-radius: 9999px;
@@ -139,8 +139,27 @@
             cursor: pointer;
             transition: all 0.2s;
         }
-        #clear-btn:hover:not(:disabled) { color: #ffffff; border-color: rgba(255, 255, 255, 0.25); }
-        #clear-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+        .toggle-btn:hover:not(:disabled) { color: #ffffff; border-color: rgba(255, 255, 255, 0.25); }
+        .toggle-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+        .toggle-btn.is-on {
+            color: #f9a8d4;
+            border-color: rgba(219, 39, 119, 0.5);
+            background: rgba(219, 39, 119, 0.15);
+        }
+        .speak-btn {
+            margin-top: 6px;
+            padding: 2px 8px;
+            background: rgba(255, 255, 255, 0.06);
+            border: 1px solid rgba(255, 255, 255, 0.12);
+            border-radius: 9999px;
+            color: #9ca3af;
+            font-size: 10px;
+            line-height: 1.4;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        .speak-btn:hover { color: #ffffff; border-color: rgba(255, 255, 255, 0.3); }
+        .speak-btn.is-loading { opacity: 0.5; cursor: wait; }
         #send-btn:disabled { opacity: 0.5; cursor: not-allowed; }
         #user-input:disabled { opacity: 0.6; }
         .powered-by { padding: 10px 16px; font-size: 11px; color: #6b7280; text-align: center; background: rgba(0, 0, 0, 0.4); border-top: 1px solid rgba(255, 255, 255, 0.06); }
@@ -161,8 +180,9 @@
                 </div>
             </div>
             <div class="header-actions">
-                <div class="badge">18+ Adults Only</div>
-                <button id="clear-btn" type="button" aria-label="Clear conversation">Clear</button>
+                <button id="voice-btn" type="button" class="toggle-btn is-on" aria-pressed="true">Voice: On</button>
+                <button id="mode-btn" type="button" class="toggle-btn" aria-pressed="false">Photo: Normal</button>
+                <button id="clear-btn" type="button" class="toggle-btn" aria-label="Clear conversation">Clear</button>
             </div>
         </div>
 
