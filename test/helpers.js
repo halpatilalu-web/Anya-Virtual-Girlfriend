@@ -51,8 +51,10 @@ export function spyPuter(overrides = {}) {
                     calls.chat.push({ messages, options });
                     return { message: { content: overrides.reply ?? 'Haan jaan ❤️' } };
                 },
-                txt2img: async (prompt, options) => {
-                    calls.txt2img.push({ prompt, options });
+                txt2img: async (...args) => {
+                    // txt2img(prompt, testMode) — capture the raw arguments so
+                    // tests can assert on the cost-related flag.
+                    calls.txt2img.push({ prompt: args[0], args: { testMode: args[1] } });
                     const img = window.document.createElement('img');
                     img.src = 'data:image/png;base64,iVBORw0KGgo=';
                     return img;

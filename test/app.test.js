@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { describe, it } from 'node:test';
 import { boot, spyPuter } from './helpers.js';
 
@@ -154,13 +155,13 @@ describe('images', () => {
         const app = boot(spy.factory);
         await app.send('apni photo bhejo');
 
-        const [{ prompt, options }] = spy.calls.txt2img;
+        const [{ prompt, args }] = spy.calls.txt2img;
         assert.match(prompt, /22 year old Indian girl Priya/);
         assert.match(prompt, /apni photo bhejo/);
-        // Compare fields, not the object: it comes from the jsdom realm, so a
-        // strict deep-equal would fail on the foreign Object prototype.
-        assert.equal(options.width, 512);
-        assert.equal(options.height, 768);
+
+        // txt2img(prompt, testMode): the cost settings live in the options
+        // object, which is only passed on the object-form call.
+        assert.equal(args.testMode, false, 'test mode must be off in production');
 
         const img = app.$('.chat-image');
         assert.ok(img, 'image element should be rendered');
@@ -187,6 +188,22 @@ describe('images', () => {
 
         assert.equal(app.$$('.chat-image').length, 0, 'broken image removed');
         assert.ok(app.text().includes('Photo nahi ban payi'));
+    });
+
+    it('pins a low quality tier so an upstream default change cannot raise cost', () => {
+        const source = readFileSync(new URL('../app.js', import.meta.url), 'utf8');
+        const options = source.match(/const IMAGE_OPTIONS = \{([^}]*)\}/);
+
+        assert.ok(options, 'IMAGE_OPTIONS should be a single-line object literal');
+        assert.match(options[1], /quality:\s*'low'/, "quality must stay pinned to 'low'");
+    });
+
+    it('keeps test mode off, since it would show sample images to real users', () => {
+        const source = readFileSync(new URL('../app.js', import.meta.url), 'utf8');
+        const flag = source.match(/const TEST_MODE = (true|false)/);
+
+        assert.ok(flag, 'TEST_MODE constant should exist');
+        assert.equal(flag[1], 'false');
     });
 
     it('shows a friendly message when txt2img returns nothing', async () => {
