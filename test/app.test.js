@@ -283,27 +283,53 @@ describe('persona', () => {
     const readSource = () => readFileSync(new URL('../app.js', import.meta.url), 'utf8');
     const readHtml = () => readFileSync(new URL('../index.html', import.meta.url), 'utf8');
 
+    // The character is a girlfriend first. These tests exist because a previous
+    // revision quietly turned her into a neutral guide, which was not the
+    // product.
+    it('is a romantic girlfriend, not a generic assistant', () => {
+        assert.match(readSource(), /romantic girlfriend/i);
+        assert.match(readHtml(), /girlfriend/i);
+    });
+
+    it('keeps a personality: opinions and short texting style', () => {
+        const prompt = readSource();
+        assert.match(prompt, /Have opinions/i);
+        assert.match(prompt, /1-3 sentences/i);
+    });
+
+    it('stays in Hinglish and keeps pet names', () => {
+        const prompt = readSource();
+        assert.match(prompt, /Hinglish/i);
+        assert.match(prompt, /pet names/i);
+    });
+
+    it('is still comfortable answering real intimacy questions', () => {
+        assert.match(readSource(), /contraception/i);
+        assert.match(readSource(), /without shame/i);
+    });
+
     it('sends boundaries that forbid explicit roleplay', () => {
         const prompt = readSource();
-        assert.match(prompt, /do not write sexual or explicit roleplay/i);
-        assert.match(prompt, /never produce sexual content involving minors/i);
+        assert.match(prompt, /No explicit sexual roleplay/i);
+        assert.match(prompt, /sexual content involving minors/i);
+    });
+
+    it('stops her becoming a refusal machine', () => {
+        // A model that lectures on every turn is a worse product than one that
+        // redirects once and stays warm.
+        assert.match(readSource(), /Never lecture twice/i);
     });
 
     it('sends the medical-disclaimer boundary', () => {
-        assert.match(readSource(), /never diagnose|do not pose as a medical professional/i);
-    });
-
-    it('stays in Hinglish', () => {
-        assert.match(readSource(), /Hinglish/i);
+        assert.match(readSource(), /Never diagnose/i);
     });
 
     // The greeting must not promise capability the model refuses to deliver.
     // This was the original bug: the copy advertised "sexy baatein" while every
     // provider silently blocked it, so the app looked broken.
     it('does not advertise explicit content in the visible copy', () => {
-        const html = readHtml();
         const banned = /sexy baatein|fantasy ko bina|har fantasy/i;
-        assert.ok(!banned.test(html), 'copy must not promise explicit roleplay');
+        assert.ok(!banned.test(readHtml()), 'copy must not promise explicit roleplay');
     });
 
     it('states the roleplay limit up front in the greeting', () => {

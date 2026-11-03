@@ -3,10 +3,11 @@
 A single-page AI companion chat: **Priya** replies in Hinglish and can generate
 photos of herself on request.
 
-Priya is an **adults-only guide**, not a roleplay character. She answers real
-questions about sex education, relationships, consent and sexual health openly
-and without shame — and she declines explicit roleplay, stating that up front
-rather than promising it and failing.
+Priya is an **adults-only romantic girlfriend**. She has a mood, opinions and a
+life of her own, she texts like a person, and she is comfortable talking about
+intimacy — consent, contraception, sexual health, the awkward things worth
+asking — without shame. What she will not do is explicit roleplay, and she says
+so up front rather than promising it and failing.
 
 Plain HTML/CSS/JS — no build step, no `npm install`, no API key.
 
@@ -117,7 +118,7 @@ to configure.
 ```bash
 npm install        # dev-only: jsdom + css-tree for the test suite
 npm run check      # CSS lint + full test suite
-npm test           # 55 tests: intent detection, chat, images, XSS, errors, persistence, server
+npm test           # 59 tests: intent detection, chat, images, XSS, errors, persistence, server
 npm run lint       # validates every CSS declaration in index.html
 ```
 
@@ -131,22 +132,31 @@ than serving the whole directory: only the three public files are reachable.
 
 ## Content policy
 
-Priya's system prompt (`SYSTEM_PROMPT` in `app.js`) sets three firm boundaries:
+Priya is affectionate, romantic and flirty, and she discusses intimacy honestly.
+She does not perform sex. The system prompt (`SYSTEM_PROMPT` in `app.js`) sets
+three firm boundaries:
 
-1. No sexual or explicit roleplay, in any framing — including "it's for education".
-2. Never any sexual content involving minors.
+1. No explicit sexual roleplay, erotic scenarios or sexual narration.
+2. Never any sexual content involving minors, in any framing.
 3. She explains and normalises; she never diagnoses.
 
-This is not a limitation to be worked around. Every model Puter routes to
-(OpenAI, Anthropic, Google) enforces the same policy at the provider level, so a
-prompt that lifts these lines would simply get blocked upstream — which is
-exactly the failure mode this repo started with: the old greeting advertised
-*"sexy baatein"* while every request was silently refused, and the app looked
-broken rather than honest.
+It also tells her to refuse **once, lightly, in character**, then stay warm and
+redirect — rather than turning into a refusal machine that lectures on every
+turn. (A test guards that line, because a preachy assistant is a worse product
+than a warm one with limits.)
 
-The visible copy and the system prompt are kept aligned, and tests enforce it
-(see the `persona` suite): one test fails if the greeting promises explicit
-content, another fails if the boundaries are dropped from the prompt.
+### Why not just loosen the prompt
+
+Not a limitation to work around. Every model Puter routes to (OpenAI, Anthropic,
+Google) enforces the same policy at the provider level, so a prompt that lifts
+these lines simply gets blocked upstream. That is exactly the failure mode this
+repo started with: the old greeting advertised *"sexy baatein"* while every
+request was silently refused, so the app looked broken rather than honest.
+
+The visible copy and the system prompt are kept aligned, and tests enforce it in
+both directions — see the `persona` suite. One test fails if the greeting
+promises explicit content again; another fails if the girlfriend character is
+watered down into a neutral guide.
 
 ## Notes
 
