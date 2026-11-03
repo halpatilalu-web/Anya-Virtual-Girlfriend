@@ -3,44 +3,155 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Priya - Your Virtual Companion</title>
-    <!-- Live Tailwind Framework CSS CDN -->
-    <link rel="stylesheet" href="https://cloudflare.com">
+    <title>Priya - Virtual Companion</title>
     <style>
-        body { background: linear-gradient(135deg, #09090b 0%, #0f172a 50%, #09090b 100%); min-height: 100vh; font-family: sans-serif; }
-        .glass-panel { background: rgba(255, 255, 255, 0.03); backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px); border: 1px solid rgba(255, 255, 255, 0.08); box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5); }
-        #chat-container { scrollbar-width: thin; scrollbar-color: rgba(255,255,255,0.1) transparent; height: 60vh; overflow-y: auto; display: flex; flex-direction: column; }
-        #chat-container::-webkit-scrollbar { width: 6px; }
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { 
+            background: linear-gradient(135deg, #09090b 0%, #111827 50%, #020617 100%); 
+            min-height: 100vh; 
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; 
+            display: flex; 
+            align-items: center; 
+            justify-content: center; 
+            padding: 15px;
+            color: #ffffff;
+        }
+        .app-container { 
+            width: 100%; 
+            max-width: 600px; 
+            height: 90vh; 
+            background: rgba(255, 255, 255, 0.03); 
+            backdrop-filter: blur(25px); 
+            -webkit-backdrop-filter: blur(25px); 
+            border: 1px solid rgba(255, 255, 255, 0.08); 
+            border-radius: 24px; 
+            box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.7); 
+            display: flex; 
+            flex-direction: column; 
+            overflow: hidden; 
+        }
+        .app-header { 
+            padding: 16px 20px; 
+            border-b: 1px solid rgba(255, 255, 255, 0.08); 
+            background: rgba(0, 0, 0, 0.3); 
+            display: flex; 
+            align-items: center; 
+            justify-content: space-between; 
+        }
+        .bot-status { display: flex; align-items: center; gap: 10px; }
+        .status-dot { width: 10px; height: 10px; background: #10b981; rounded-radius: 50%; border-radius: 50%; }
+        .bot-title { font-size: 16px; font-weight: 700; tracking-letter: 0.5px; }
+        .bot-subtitle { font-size: 11px; color: #9ca3af; font-weight: 400; }
+        .badge { 
+            background: rgba(219, 39, 119, 0.2); 
+            color: #f472b6; 
+            border: 1px solid rgba(219, 39, 119, 0.3); 
+            padding: 4px 10px; 
+            border-radius: 9999px; 
+            font-size: 10px; 
+            font-weight: 700; 
+            text-transform: uppercase; 
+        }
+        #chat-container { 
+            flex: 1; 
+            padding: 20px; 
+            overflow-y: auto; 
+            display: flex; 
+            flex-direction: column; 
+            gap: 14px; 
+            background: rgba(0, 0, 0, 0.1);
+        }
+        #chat-container::-webkit-scrollbar { width: 4px; }
         #chat-container::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 10px; }
-        .chat-bubble-bot { background: rgba(255, 255, 255, 0.05); border: 1px solid rgba(255,255,255,0.05); border-radius: 1rem 1rem 1rem 0; margin-bottom: 1rem; align-self: flex-start; max-w: 80%; padding: 1rem; }
-        .chat-bubble-user { background: linear-gradient(135deg, #7c3aed 0%, #db2777 100%); border-radius: 1rem 1rem 0 1rem; margin-bottom: 1rem; align-self: flex-end; margin-left: auto; max-w: 80%; padding: 1rem; box-shadow: 0 10px 15px -3px rgba(124, 58, 237, 0.3); }
-        .system-bubble { background: rgba(239, 68, 68, 0.1); border: 1px solid rgba(239, 68, 68, 0.2); color: #fca5a5; font-size: 0.75rem; text-align: center; align-self: center; width: 90%; border-radius: 0.5rem; padding: 0.5rem; margin: 0.5rem 0; }
+        .bubble { max-w: 85%; padding: 14px 16px; font-size: 14px; line-height: 1.5; }
+        .bot-bubble { 
+            background: rgba(255, 255, 255, 0.06); 
+            border: 1px solid rgba(255, 255, 255, 0.05); 
+            border-radius: 16px 16px 16px 4px; 
+            align-self: flex-start; 
+            color: #e5e7eb;
+        }
+        .user-bubble { 
+            background: linear-gradient(135deg, #6d28d9 0%, #db2777 100%); 
+            border-radius: 16px 16px 4px 16px; 
+            align-self: flex-end; 
+            box-shadow: 0 8px 16px -4px rgba(109, 40, 217, 0.4);
+        }
+        .sys-bubble { 
+            background: rgba(239, 68, 68, 0.15); 
+            border: 1px solid rgba(239, 68, 68, 0.25); 
+            color: #fca5a5; 
+            font-size: 12px; 
+            padding: 8px; 
+            border-radius: 10px; 
+            text-align: center; 
+            align-self: center; 
+            width: 90%; 
+        }
+        .input-area { 
+            padding: 16px; 
+            background: rgba(0, 0, 0, 0.4); 
+            border-top: 1px solid rgba(255, 255, 255, 0.08); 
+            display: flex; 
+            gap: 12px; 
+        }
+        #user-input { 
+            flex: 1; 
+            background: rgba(255, 255, 255, 0.05); 
+            border: 1px solid rgba(255, 255, 255, 0.1); 
+            border-radius: 12px; 
+            padding: 12px 16px; 
+            color: #ffffff; 
+            font-size: 14px; 
+            outline: none; 
+            transition: all 0.2s; 
+        }
+        #user-input:focus { border-color: #db2777; background: rgba(255, 255, 255, 0.08); }
+        #send-btn { 
+            background: linear-gradient(135deg, #7c3aed 0%, #db2777 100%); 
+            border: none; 
+            border-radius: 12px; 
+            padding: 0 24px; 
+            color: #ffffff; 
+            font-size: 14px; 
+            font-weight: 700; 
+            cursor: pointer; 
+            transition: all 0.2s; 
+            box-shadow: 0 4px 12px rgba(219, 39, 119, 0.3);
+        }
+        #send-btn:active { transform: scale(0.96); }
+        img { max-width: 100%; border-radius: 12px; margin-top: 8px; border: 1px solid rgba(255,255,255,0.1); }
     </style>
 </head>
-<body class="text-white flex items-center justify-center p-4">
-    <div class="w-full max-w-4xl glass-panel rounded-3xl flex flex-col overflow-hidden">
-        <!-- Header Section -->
-        <div class="p-5 border-b border-gray-800 bg-black bg-opacity-20 flex items-center justify-between">
-            <div class="flex items-center gap-3">
-                <div class="w-3 h-3 bg-green-500 rounded-full animate-pulse"></div>
-                <h1 class="text-lg font-bold tracking-wide">Priya <span class="text-xs text-gray-400 font-normal ml-2">(Your Intelligent AI Influencer Guide)</span></h1>
+<body>
+
+    <div class="app-container">
+        <!-- Header -->
+        <div class="app-header">
+            <div class="bot-status">
+                <div class="status-dot"></div>
+                <div>
+                    <div class="bot-title">Priya</div>
+                    <div class="bot-subtitle">Your Intelligent AI Influencer Guide</div>
+                </div>
             </div>
-            <div class="text-xs bg-pink-500 bg-opacity-20 text-pink-300 border border-pink-500 border-opacity-30 px-3 py-1 rounded-full font-bold uppercase tracking-wider">18+ Mature Zone</div>
+            <div class="badge">18+ Mature Zone</div>
         </div>
 
-        <!-- Chat Workspace Area -->
-        <div id="chat-container" class="flex-1 p-6 space-y-4">
-            <div class="chat-bubble-bot">
-                <p class="text-sm leading-relaxed text-gray-200">Hey love! Main yahan hu tumhari har fantasy ko bina kisi sharm ya restriction ke samajhne aur discuss karne ke liye. Tumhe koi sex education chahiye, positions ke baare me seekhna hai, ya bas sexy baatein karni hain—bina dare pucho! ❤️</p>
+        <!-- Chat Output Grid -->
+        <div id="chat-container">
+            <div class="bubble bot-bubble">
+                Hey love! Main yahan hu tumhari har fantasy ko bina kisi sharm ya restriction ke samajhne aur discuss karne ke liye. Tumhe koi sex education chahiye, positions ke baare me seekhna hai, ya bas sexy baatein karni hain—bina dare pucho! ❤️
             </div>
         </div>
 
-        <!-- User Controls Input Bar -->
-        <div class="p-4 border-t border-gray-800 bg-black bg-opacity-20 flex gap-3">
-            <input type="text" id="user-input" placeholder="Type a message or ask for a picture/position..." class="flex-1 bg-white bg-opacity-5 border border-white border-opacity-10 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-purple-500 transition-all placeholder-gray-500 text-sm">
-            <button id="send-btn" class="bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-500 hover:to-pink-500 px-6 py-3 rounded-xl font-bold text-sm transition-all active:scale-95 shadow-lg">Send</button>
+        <!-- Inputs Console -->
+        <div class="input-area">
+            <input type="text" id="user-input" placeholder="Type a message or ask for a picture/position...">
+            <button id="send-btn">Send</button>
         </div>
     </div>
+
     <script src="app.js"></script>
 </body>
 </html>
