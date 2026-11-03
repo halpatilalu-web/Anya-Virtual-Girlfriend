@@ -1,5 +1,5 @@
 // Aapki active Google Colab dynamic link yahan properly mapped hai
-const GRADIO_COLAB_URL = "https://f705a551914c530817.gradio.live/api/predict"; 
+const GRADIO_COLAB_URL = "https://7a8e1e7b2a15cdb6a0.gradio.live/api/predict"; 
 
 document.getElementById('send-btn').addEventListener('click', handleMessage);
 document.getElementById('user-input').addEventListener('keypress', (e) => {
