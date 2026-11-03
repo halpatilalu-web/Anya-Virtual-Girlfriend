@@ -3,6 +3,11 @@
 A single-page AI companion chat: **Priya** replies in Hinglish and can generate
 photos of herself on request.
 
+Priya is an **adults-only guide**, not a roleplay character. She answers real
+questions about sex education, relationships, consent and sexual health openly
+and without shame — and she declines explicit roleplay, stating that up front
+rather than promising it and failing.
+
 Plain HTML/CSS/JS — no build step, no `npm install`, no API key.
 
 ## Run it
@@ -112,7 +117,7 @@ to configure.
 ```bash
 npm install        # dev-only: jsdom + css-tree for the test suite
 npm run check      # CSS lint + full test suite
-npm test           # 50 tests: intent detection, chat, images, XSS, errors, persistence, server
+npm test           # 55 tests: intent detection, chat, images, XSS, errors, persistence, server
 npm run lint       # validates every CSS declaration in index.html
 ```
 
@@ -123,6 +128,25 @@ any invalid declaration, caught by `css-tree`'s property validator.
 
 The same class of bug is why the dev server has an explicit allowlist rather
 than serving the whole directory: only the three public files are reachable.
+
+## Content policy
+
+Priya's system prompt (`SYSTEM_PROMPT` in `app.js`) sets three firm boundaries:
+
+1. No sexual or explicit roleplay, in any framing — including "it's for education".
+2. Never any sexual content involving minors.
+3. She explains and normalises; she never diagnoses.
+
+This is not a limitation to be worked around. Every model Puter routes to
+(OpenAI, Anthropic, Google) enforces the same policy at the provider level, so a
+prompt that lifts these lines would simply get blocked upstream — which is
+exactly the failure mode this repo started with: the old greeting advertised
+*"sexy baatein"* while every request was silently refused, and the app looked
+broken rather than honest.
+
+The visible copy and the system prompt are kept aligned, and tests enforce it
+(see the `persona` suite): one test fails if the greeting promises explicit
+content, another fails if the boundaries are dropped from the prompt.
 
 ## Notes
 
