@@ -17,9 +17,19 @@
 const CHAT_MODEL = 'gpt-5.4-nano';
 
 // Image options passed straight to puter.ai.txt2img().
-// Add `model: '<id>'` to trade cost against quality, e.g.
-// 'black-forest-labs/flux-schnell' is much cheaper than the default gpt-image-2.
-const IMAGE_OPTIONS = { width: 512, height: 768 };
+//
+// Cost: there is no free image model on Puter. Every generation is charged to
+// the user's monthly allowance at the model's real rate, so `test_mode` below
+// is the only genuinely zero-cost path.
+//   - gpt-image-2 (default)  ~$0.0059 per image
+//   - flux-schnell           ~$0.003 per image, but the Cloudflare route always
+//                            returns 1024x1024, which loses the portrait framing
+//                            set by width/height here.
+// `quality: 'low'` is already the default for gpt-image-2; pinning it means a
+// change to the upstream default cannot silently raise what users are charged.
+const TEST_MODE = false;
+
+const IMAGE_OPTIONS = { width: 512, height: 768, quality: 'low' };
 
 const IMAGE_PROMPT_PREFIX =
     '1girl, solo, beautiful 22 year old Indian girl Priya, long black hair, ' +
@@ -254,10 +264,13 @@ function extractReply(response) {
 async function sendImage(message) {
     const prompt = `${IMAGE_PROMPT_PREFIX}, ${message}`;
 
+    // txt2img(prompt, testMode) — the second argument is the test-mode flag,
+    // which returns a sample image without charging credits.
+    //
     // txt2img() has no documented abort support, so race it against a timer to
     // stop the spinner running forever. The upstream request may still finish.
     const generated = await withTimeout(
-        puter.ai.txt2img(prompt, IMAGE_OPTIONS),
+        puter.ai.txt2img(prompt, TEST_MODE),
         IMAGE_TIMEOUT_MS
     );
 
