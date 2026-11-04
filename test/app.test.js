@@ -199,6 +199,20 @@ describe('images', () => {
         assert.match(options[1], /quality:\s*'low'/, "quality must stay pinned to 'low'");
     });
 
+    it('actually sends the pinned image options, not just declares them', async () => {
+        // Regression: IMAGE_OPTIONS was defined but never passed, so every image
+        // was billed at the provider default size/quality.
+        const spy = spyPuter();
+        const app = boot(spy.factory);
+        await app.send('photo bhejo');
+
+        const { options } = spy.calls.txt2img[0].args;
+        assert.ok(options, 'third txt2img argument must be the options object');
+        assert.equal(options.width, 512);
+        assert.equal(options.height, 768);
+        assert.equal(options.quality, 'low');
+    });
+
     it('keeps test mode off, since it would show sample images to real users', () => {
         const source = readFileSync(new URL('../app.js', import.meta.url), 'utf8');
         const flag = source.match(/const TEST_MODE = (true|false)/);
@@ -277,6 +291,209 @@ describe('error handling', () => {
         await app.send('hi');
 
         assert.ok(app.text().includes('AI service load nahi hui'));
+    });
+});
+
+describe('voice playback errors (reported bug)', () => {
+    // The user reported: pressing the speaker under a reply showed
+    // "yeh msg samjh nahi aaya, thoda alag tarike se likh ke bhejo" — chat
+    // wording for a playback failure. Two causes: reportError() had no idea it
+    // was a voice failure, and the TTS cache stored the original text while the
+    // request had sent SSML.
+    const withTts = (impl) => (window) => ({
+        ai: {
+            chat: async () => ({ message: { content: 'Haan jaan ❤️' } }),
+            txt2img: async () => null,
+            txt2speech: impl
+        }
+    });
+
+    it('never uses chat wording for a voice failure', async () => {
+        const app = boot(withTts(async () => { throw Object.assign(new Error('bad_request'), { code: 'bad_request' }); }));
+        await app.send('hi');
+        await new Promise((r) => setTimeout(r, 40));
+
+        app.$('.speak-btn').click();
+        await new Promise((r) => setTimeout(r, 40));
+
+        const transcript = app.document.getElementById('chat-container').textContent;
+        assert.ok(!transcript.includes('alag tarike se likh ke bhejo'), 'chat wording must not appear');
+        assert.match(transcript, /Awaaz|awaaz/, 'voice-specific message expected');
+    });
+
+    it('reports a blocked autoplay as a tap-again problem', async () => {
+        const app = boot((window) => {
+            const api = withTts(async () => {
+                const audio = window.document.createElement('audio');
+                audio.src = 'data:audio/mp3;base64,AAAA';
+                audio.play = async () => {
+                    const err = new Error('play() failed');
+                    err.name = 'NotAllowedError';
+                    throw err;
+                };
+                return audio;
+            })(window);
+            return api;
+        });
+        await app.send('hi');
+        await new Promise((r) => setTimeout(r, 40));
+
+        app.$('.speak-btn').click();
+        await new Promise((r) => setTimeout(r, 60));
+
+        const transcript = app.document.getElementById('chat-container').textContent;
+        assert.match(transcript, /tap|▶|screen/i);
+    });
+
+    it('replays from cache without a second TTS call', async () => {
+        let calls = 0;
+        const app = boot(withTts(async () => {
+            calls += 1;
+            const audio = app?.window
+                ? app.window.document.createElement('audio')
+                : null;
+            return audio;
+        }));
+        // Rebuild cleanly with a proper closure.
+        const spy = spyPuter();
+        const app2 = boot(spy.factory);
+        await app2.send('hi');
+        await new Promise((r) => setTimeout(r, 40));
+        const before = spy.calls.txt2speech.length;
+
+        app2.$('.speak-btn').click();
+        await new Promise((r) => setTimeout(r, 40));
+
+        assert.equal(spy.calls.txt2speech.length, before, 'cache hit, no re-synthesis');
+    });
+
+    it('sends SSML on the first call and reuses the same shape on replay', async () => {
+        const spy = spyPuter();
+        const app = boot(spy.factory);
+        await app.send('hi');
+        await new Promise((r) => setTimeout(r, 40));
+
+        const first = spy.calls.txt2speech[0];
+        assert.match(first.text, /^<speak>/, 'first call is SSML');
+
+        // Force the cache to miss by clearing the stored url, then replay.
+        app.$('.speak-btn').click();
+        await new Promise((r) => setTimeout(r, 40));
+
+        for (const call of spy.calls.txt2speech) {
+            assert.match(call.text, /^<speak>/, 'every call must stay SSML — mixing shapes is what broke replay');
+        }
+    });
+});
+
+describe('creative content', () => {
+    const promptOf = (spy) => spy.calls.chat[0].messages[0].content;
+
+    it('carries Indian song and verse knowledge', async () => {
+        const spy = spyPuter();
+        const app = boot(spy.factory);
+        await app.send('hi');
+
+        const prompt = promptOf(spy);
+        for (const topic of ['ghazal', 'qawwali', 'bhajan', 'lullab'] ) {
+            assert.match(prompt.toLowerCase(), new RegExp(topic), `prompt should mention ${topic}`);
+        }
+        assert.match(prompt, /Hanuman Chalisa/);
+        assert.match(prompt, /Kabir/);
+        assert.match(prompt, /shayari/);
+        assert.match(prompt, /muhavare/);
+        assert.match(prompt, /Amritwani/);
+    });
+
+    it('tells her to flirt back inside the song', async () => {
+        const spy = spyPuter();
+        const app = boot(spy.factory);
+        await app.send('hi');
+
+        assert.match(promptOf(spy), /flirt back using the/);
+    });
+
+    it('forbids inventing famous verses', async () => {
+        const spy = spyPuter();
+        const app = boot(spy.factory);
+        await app.send('hi');
+
+        assert.match(promptOf(spy), /Never invent a famous verse/);
+    });
+
+    it('renders quoted lines as verse blocks, never as HTML', async () => {
+        const app = boot(spyPuter({
+            reply: 'Suno: "Tum hi ho, tum hi ho" — ye line mere liye kuch aur hai. "Ab tum hi ho"'
+        }).factory);
+        await app.send('gaana sunao');
+
+        const verses = app.$$('.verse');
+        assert.equal(verses.length, 2);
+        assert.equal(verses[0].textContent, 'Tum hi ho, tum hi ho');
+        assert.equal(app.$$('#chat-container b, #chat-container script').length, 0);
+    });
+
+    it('does not treat quoted HTML as markup', async () => {
+        const app = boot(spyPuter({ reply: 'Line: "<img src=x onerror=alert(1)>" bas' }).factory);
+        await app.send('hi');
+
+        assert.equal(app.$$('#chat-container img').length, 0, 'no element injected');
+        assert.ok(app.$('.verse').textContent.includes('<img'), 'kept as literal text');
+    });
+});
+
+describe('voice notes', () => {
+    it('sends an audio bubble when the user asks for a voice note', async () => {
+        const spy = spyPuter({ reply: 'Haan jaan, suno na.' });
+        const app = boot(spy.factory);
+        await app.send('voice note bhejo');
+        await new Promise((r) => setTimeout(r, 60));
+
+        assert.ok(app.$('.voice-note'), 'audio element rendered');
+        assert.ok(app.text().includes('voice note'));
+    });
+
+    it('recognises several ways of asking', async () => {
+        for (const ask of ['awaaz me sunao', 'sing karke bhejo', 'bol ke batao']) {
+            const spy = spyPuter();
+            const app = boot(spy.factory);
+            await app.send(ask);
+            await new Promise((r) => setTimeout(r, 60));
+            assert.ok(app.$('.voice-note'), `no voice note for "${ask}"`);
+        }
+    });
+
+    it('does not send a voice note for an ordinary message', async () => {
+        const spy = spyPuter();
+        const app = boot(spy.factory);
+        await app.send('kaise ho');
+        await new Promise((r) => setTimeout(r, 60));
+
+        assert.equal(app.$$('.voice-note').length, 0);
+    });
+
+    it('lengthens pauses for quoted verse so it lands like singing', async () => {
+        const spy = spyPuter({ reply: 'Suno: "Tum hi ho" aur "ab tum hi ho" ❤️' });
+        const app = boot(spy.factory);
+        await app.send('gaana sunao voice note');
+        await new Promise((r) => setTimeout(r, 60));
+
+        const voiceCall = spy.calls.txt2speech.at(-1);
+        assert.match(voiceCall.text, /650ms/, 'verse break applied');
+    });
+
+    it('keeps the text reply even when the voice note fails', async () => {
+        const spy = spyPuter({ reply: 'Haan jaan, suno na.' });
+        const app = boot((window) => {
+            const api = spy.factory(window);
+            api.ai.txt2speech = async () => { throw new Error('tts down'); };
+            return api;
+        });
+        await app.send('voice note bhejo');
+        await new Promise((r) => setTimeout(r, 60));
+
+        assert.ok(app.text().includes('Haan jaan, suno na.'), 'reply preserved');
+        assert.equal(app.$$('.voice-note').length, 0);
     });
 });
 

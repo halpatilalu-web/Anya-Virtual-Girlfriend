@@ -33,7 +33,7 @@ requires no API key and no backend:
 | --- | --- |
 | Chat replies | `puter.ai.chat(messages, { model })` |
 | Spoken replies | `puter.ai.txt2speech(text, VOICE_OPTIONS)` |
-| Photos | `puter.ai.txt2img(prompt, options)` |
+| Photos | `puter.ai.txt2img(prompt, testMode, options)` |
 
 ### Memory
 
@@ -99,6 +99,51 @@ Two details matter:
   invalid SSML and fail the whole utterance.
 
 Tone detection is local string matching, so it costs nothing extra.
+
+### Songs, shayari and verses
+
+She can sing — with the actual lyrics — and she can carry a whole conversation
+about music, not just quote one line and change the subject. The persona prompt
+covers film songs (old and new), ghazals, qawwali, bhajans, aartis, shlokas,
+Hanuman Chalisa, Kabir ke dohe, Amritwani, Ramayan/Mahabharat katha, lullabies,
+motivational speech, shayari and muhavare.
+
+Three deliberate rules in that block:
+
+- **Sing in quotes.** Lyrics go inside `"..."`, which lets the UI style them as
+  verse and lets the voice note slow down at the line breaks.
+- **Flirt *inside* the song.** She plays with a line as she sings it, best-friend
+  style, instead of reading the lyrics out like a search result.
+- **Never invent a famous verse.** If she is not sure of the words she says so and
+  offers a couplet she does know — a fabricated Hanuman Chalisa line is worse
+  than an honest "poora yaad nahi".
+
+Quoted spans are rendered as their own `.verse` block, built from text nodes only
+(`renderTextWithVerse`), so a model reply containing `<img onerror=...>` stays
+literal text.
+
+### Voice notes
+
+Asking for a voice note — *"voice note bhejo"*, *"awaaz me sunao"*, *"sing karke
+bhejo"*, *"bol ke batao"* — makes `VOICE_NOTE_RE` flag the turn. After the text
+reply is on screen, `sendVoiceNote()` synthesises the same words and drops an
+`<audio controls>` bubble into the chat, so it can be kept and replayed without
+pressing ▶.
+
+`buildVoiceNoteSpeech()` stretches the pause to **650 ms** when the reply contains
+quoted verse, so a song lands line by line instead of as one rush. Text is
+truncated to `VOICE_NOTE_MAX_CHARS` (2800) — Polly's hard limit is 3000
+characters and a long song would otherwise fail with `input_too_large`. A failed
+voice note never removes the text reply.
+
+### Error messages are source-aware
+
+`reportError(error, source)` now separates `'chat'` from `'voice'`. Previously
+every failure — including a blocked autoplay — was reported with the chat copy
+*"yeh message samajh nahi aaya"*, which is why pressing ▶ looked like she had not
+understood the message at all. Voice failures now say what actually went wrong
+(blocked playback, service down, text too long) and the replay cache stores the
+exact string that was sent, SSML included, so a replay reuses the same clip.
 
 ### Reactions
 
