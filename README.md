@@ -528,6 +528,38 @@ so editing `localStorage` cannot skip the gate. Confirming also starts a fresh
 thread, because carrying flirty turns into a lesson produces answers in the
 wrong voice.
 
+### The 18+ panel, honestly
+
+The Guide panel is the one place that says out loud what the 18+ switch does and
+does not do, because a switch whose limits are hidden looks broken instead of
+honest.
+
+**What it turns on**
+
+- **Close mood** — a third voice tone. `intimate` runs at `rate: 84%`,
+  `pitch: -4%` with a 780 ms ellipsis pause, against `92% / -2% / 620 ms` for
+  `tender`. It is the voice of someone talking to you in a quiet room, and it is
+  the single biggest change to how intimate she *sounds*. It also adds a
+  prompt instruction: slower, warmer, fewer jokes, more attention on him — and
+  explicitly *not* an escalation of what she is willing to say.
+- **Chat brain picker** — Nano (default, cheap), Mini, Sonnet, GPT-5.4. All are
+  ordinary public models on Puter; none of them changes what she may say, only
+  how well she writes it. A stored id that is not in the list is ignored and the
+  default is used, so nothing expensive can be selected by accident or by
+  editing `localStorage`.
+
+**What it does not turn on**
+
+No explicit sex scenes, no NSFW images, no moaning audio. Every model Puter
+routes to blocks that at the provider level, so a switch that "enabled" it would
+be a switch that always fails. The panel says this to the user in plain Hindi
+rather than letting them find out by asking and getting refused.
+
+If you want that class of product, it needs a provider that permits it — an
+uncensored local model, or a service like perchance.org, which is exactly such a
+provider. It is not a prompt change in this repo, and pretending otherwise would
+ship a broken button.
+
 ### Why not just loosen the prompt
 
 Not a limitation to work around. Every model Puter routes to (OpenAI, Anthropic,

@@ -15,7 +15,31 @@
 // ---------------------------------------------------------------------------
 
 // Any model id from https://developer.puter.com/ai/models/ works here.
+// Models the chat picker offers. All are ordinary public models on Puter; none
+// of them changes what she is allowed to say, only how well she says it. The
+// default stays the cheap one so nothing expensive is ever selected by accident.
 const CHAT_MODEL = 'gpt-5.4-nano';
+const CHAT_MODEL_CHOICES = [
+    { id: 'gpt-5.4-nano', label: 'Nano — fast & cheap (default)' },
+    { id: 'gpt-5.4-mini', label: 'Mini — a bit smarter' },
+    { id: 'claude-sonnet-4', label: 'Sonnet — warmest writing' },
+    { id: 'gpt-5.4', label: 'GPT-5.4 — strongest, slowest' }
+];
+const CHAT_MODEL_KEY = 'priya.model.v1';
+
+/** The model actually used, falling back to the default on anything odd. */
+function activeChatModel() {
+    const stored = modelChoice();
+    return CHAT_MODEL_CHOICES.some((m) => m.id === stored) ? stored : CHAT_MODEL;
+}
+
+function modelChoice() {
+    try {
+        return getLocalStore().getItem(CHAT_MODEL_KEY) || CHAT_MODEL;
+    } catch {
+        return CHAT_MODEL;
+    }
+}
 
 // Image options passed straight to puter.ai.txt2img().
 //
@@ -314,7 +338,10 @@ const FALLBACK_VOICE_OPTIONS = {
 const FALLBACK_TONE_INSTRUCTIONS = {
     tender: 'Speak softly and warmly, a little slow, like someone who cares about the listener.',
     excited: 'Speak brightly and energetically, with quick light pacing.',
-    neutral: 'Speak naturally and warmly, like a close friend talking.'
+    neutral: 'Speak naturally and warmly, like a close friend talking.',
+    intimate:
+        'Speak low and close, unhurried, with real warmth — the voice of someone ' +
+        'talking to you in a quiet room at night.'
 };
 
 // Polly has no style parameter, but it speaks SSML, so tone is applied as
@@ -352,7 +379,11 @@ const SONG_PROSODY = {
 const TONE_PROSODY = {
     tender: { rate: '92%', pitch: '-2%', break: '160ms', pause: '620ms' },
     excited: { rate: '108%', pitch: '+3%', break: '130ms', pause: '380ms' },
-    neutral: { rate: '98%', pitch: '0%', break: '150ms', pause: '520ms' }
+    neutral: { rate: '98%', pitch: '0%', break: '150ms', pause: '520ms' },
+    // Close and slow: the voice someone uses when they are talking to you at
+    // night, not across a room. Added for 18+ mode, but it is a delivery choice,
+    // not a content one — the words she is allowed to say do not change.
+    intimate: { rate: '84%', pitch: '-4%', break: '230ms', pause: '780ms' }
 };
 
 // Reactions he can leave on a reply. She notices them.
@@ -493,6 +524,8 @@ const guideModeBtn = document.getElementById('guide-mode-btn');
 const guideRevoke = document.getElementById('guide-revoke');
 const guideNote = document.getElementById('guide-note');
 const modeBadge = document.getElementById('mode-badge');
+const closeMoodBox = document.getElementById('close-mood');
+const chatModelSelect = document.getElementById('chat-model');
 const identityMsg = document.getElementById('identity-msg');
 
 // Keep the greeting around so "Clear" can put the chat back to its initial state.
@@ -531,6 +564,9 @@ function defaultMemory() {
         chatMode: 'girlfriend',
         // Set only by the 18+ confirmation. Guide mode requires it.
         adultConfirmed: false,
+        // The "close" switch: softer voice, closer tone, more room for the
+        // affectionate side. It is a tone switch, not a content switch.
+        closeMood: false,
         // Face lock: a data URL the user picked from their own photos. Everything
         // else about a photo (pose, outfit, place) stays free-form.
         identityImage: null
@@ -589,6 +625,7 @@ function loadMemory() {
                 : null,
             chatMode: parsed.chatMode === 'guide' ? 'guide' : 'girlfriend',
             adultConfirmed: parsed.adultConfirmed === true,
+            closeMood: parsed.closeMood === true,
 
         };
     } catch {
@@ -876,6 +913,20 @@ function renderModeUI() {
     if (guideGate) guideGate.hidden = memory.adultConfirmed;
     if (guideBody) guideBody.hidden = !memory.adultConfirmed;
 
+    // The model picker lives in the 18+ panel but is harmless either way, so it
+    // is filled once and then just reflects what is stored.
+    if (chatModelSelect && chatModelSelect.options.length === 0) {
+        for (const choice of CHAT_MODEL_CHOICES) {
+            const option = document.createElement('option');
+            option.value = choice.id;
+            option.textContent = choice.label;
+            chatModelSelect.appendChild(option);
+        }
+        chatModelSelect.value = activeChatModel();
+    }
+
+    if (closeMoodBox) closeMoodBox.checked = memory.closeMood === true;
+
     if (guideNote) {
         guideNote.textContent = chatMode === 'guide'
             ? 'On — she is answering as a guide right now. No flirting unless you start it.'
@@ -901,6 +952,7 @@ function confirmAdult() {
 
 function revokeAdult() {
     memory.adultConfirmed = false;
+    memory.closeMood = false;
     if (chatMode === 'guide') setChatMode('girlfriend', { silent: true });
     saveMemory();
     renderModeUI();
@@ -996,6 +1048,14 @@ function buildSystemPrompt() {
     // Guide mode swaps the flirty texture for teaching, but she stays the same
     // person: same name, same warm Hinglish, different job in this chat.
     const parts = [persona];
+
+    if (closeMoodOn()) {
+        context.push(
+            'He has turned the close switch on. Talk like you are next to him in a ' +
+            'quiet room: slower, warmer, fewer jokes, more attention on him. ' +
+            'This is about closeness and warmth, not about escalating what you say.'
+        );
+    }
 
     if (chatMode === 'guide' && memory.adultConfirmed) {
         parts.push(SEX_ED_PROMPT);
@@ -1220,6 +1280,22 @@ guideModeBtn?.addEventListener('click', () => {
     setChatMode(chatMode === 'guide' ? 'girlfriend' : 'guide');
 });
 
+closeMoodBox?.addEventListener('change', () => {
+    memory.closeMood = closeMoodBox.checked;
+    saveMemory();
+    renderModeUI();
+});
+
+chatModelSelect?.addEventListener('change', () => {
+    try {
+        getLocalStore().setItem(CHAT_MODEL_KEY, chatModelSelect.value);
+    } catch {
+        // Storage blocked: the picker still works for this page's lifetime? No —
+        // be honest, reset it so the UI never claims a model it is not using.
+        chatModelSelect.value = CHAT_MODEL;
+    }
+});
+
 guideRevoke?.addEventListener('click', () => {
     revokeAdult();
     setChatMode('girlfriend', { silent: true });
@@ -1406,7 +1482,7 @@ async function sendChat(message, loadingDiv = null) {
             bubble?.remove();
             bubble = null;
             const response = await puter.ai.chat(messages, {
-                model: CHAT_MODEL,
+                model: activeChatModel(),
                 signal: controller.signal
             });
             raw = extractReply(response);
@@ -1578,7 +1654,7 @@ async function streamReply(messages, controller, bubble) {
     let stream;
     try {
         stream = await puter.ai.chat(messages, {
-            model: CHAT_MODEL,
+            model: activeChatModel(),
             signal: controller.signal,
             stream: true
         });
@@ -1950,6 +2026,10 @@ function detectTone(text) {
     const excited = (value.match(/[!\u{1F60D}\u{1F60A}\u{1F389}\u{1F525}]/gu) || []).length;
     const tender = (value.match(/[\.\u2026\u{1F97A}\u{1F614}\u2764]/gu) || []).length;
 
+    // In 18+ mode she leans close by default, so the same affectionate line does
+    // not come out in her daytime voice.
+    if (closeMoodOn() && tender >= excited) return 'intimate';
+
     if (excited > tender) return 'excited';
     if (tender > 0 && tender >= excited) return 'tender';
     return 'neutral';
@@ -1985,6 +2065,11 @@ function normaliseForSpeech(text) {
         .replace(/([,.!?])\s*,PAUSE,\s*([,.!?])/g, '$1 $2')
         .replace(/[ \t]{2,}/g, ' ')
         .trim();
+}
+
+/** True when the 18+ switch is on, wherever it is read from. */
+function closeMoodOn() {
+    return memory.adultConfirmed === true && memory.closeMood === true;
 }
 
 /** The silence an ellipsis turns into, at the tone's own length. */
