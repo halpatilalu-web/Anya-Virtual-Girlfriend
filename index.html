@@ -213,6 +213,10 @@
             padding: 2px;
         }
         .memory-del:hover { color: #fca5a5; }
+        /* Must be an author rule: the UA sheet's [hidden] { display: none }
+           is beaten by any author rule that sets display (e.g. .onboarding
+           below sets display: flex), which left the overlay stuck open. */
+        [hidden] { display: none !important; }
         .onboarding {
             position: absolute;
             inset: 0;

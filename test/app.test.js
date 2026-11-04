@@ -694,6 +694,67 @@ describe('long-term memory', () => {
     });
 });
 
+describe('hidden elements stay hidden (regression)', () => {
+    // The overlay was stuck open in production: .onboarding sets display: flex
+    // in the author stylesheet, and the UA sheet's [hidden] { display: none }
+    // loses to it. Toggling the attribute changed nothing on screen, so the
+    // user could never get past onboarding. jsdom cannot compute this cascade,
+    // so the guard is a direct assertion on the author CSS.
+    const readCss = () => {
+        const html = readFileSync(new URL('../index.html', import.meta.url), 'utf8');
+        return html.match(/<style>([\s\S]*?)<\/style>/)[1];
+    };
+
+    it('declares an author [hidden] rule', () => {
+        const css = readCss();
+        assert.match(
+            css,
+            /\[hidden\]\s*\{[^}]*display:\s*none/,
+            'author [hidden] { display: none } is required or overlays stay open'
+        );
+    });
+
+    it('makes the hidden rule strong enough to beat display:flex', () => {
+        // Strip comments first: a comment containing braces breaks naive matching.
+        const css = readCss().replace(/\/\*[\s\S]*?\*\//g, '');
+        const match = css.match(/\[hidden\]\s*\{([^}]*)\}/);
+
+        assert.ok(match, '[hidden] rule not found');
+        assert.match(match[1], /!important/, 'without !important a later display rule wins');
+    });
+
+
+    // Any element carrying the hidden attribute in markup must be hideable.
+    it('every element with a hidden attribute is covered', () => {
+        const html = readFileSync(new URL('../index.html', import.meta.url), 'utf8');
+        const hiddenEls = [...html.matchAll(/<[^>]+\shidden[\s>]/g)];
+        assert.ok(hiddenEls.length > 0, 'expected at least one hidden element');
+
+        for (const el of hiddenEls) {
+            const tag = el[0].slice(0, 60);
+            assert.ok(!/style="[^"]*display\s*:\s*flex/.test(tag), `inline display overrides hidden: ${tag}`);
+        }
+    });
+
+    it('skip actually clears the attribute', () => {
+        const app = boot(spyPuter().factory);
+        const overlay = app.document.getElementById('onboarding');
+        assert.equal(overlay.hidden, false);
+
+        app.document.getElementById('ob-skip').click();
+        assert.equal(overlay.hidden, true, 'hidden must be set so the CSS rule can apply');
+    });
+
+    it('submitting onboarding also closes the overlay', () => {
+        const app = boot(spyPuter().factory);
+        const overlay = app.document.getElementById('onboarding');
+
+        app.document.getElementById('ob-name').value = 'Arjun';
+        app.document.getElementById('ob-start').click();
+        assert.equal(overlay.hidden, true);
+    });
+});
+
 describe('onboarding', () => {
     it('asks for a name on first run', () => {
         const app = boot(spyPuter().factory);
