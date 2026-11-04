@@ -168,6 +168,100 @@ const SYSTEM_PROMPT_TEMPLATE = [
     '- When he flirts inside a song line, flirt back inside your next line.',
 ].join(' ');
 
+// ---------------------------------------------------------------------------
+// Sex education mode
+// ---------------------------------------------------------------------------
+//
+// Added when the user asks for a "sex education" companion that talks like a real
+// person, in ordinary Hindi/Hinglish, so he actually understands.
+//
+// The numbers below are deliberately the *typical use* figures, because those are
+// the ones that describe real life. Sources: CDC contraceptive effectiveness
+// table and Contraceptive Technology (21st ed.); India's age of consent is 18
+// under the POCSO Act, 2012.
+//
+// What this mode is NOT: explicit roleplay. Every provider Puter routes to blocks
+// sexual content upstream, so promising it would ship a button that fails. The
+// honest version of "adult" is candid, accurate, shame-free information.
+const SEX_ED_PROMPT = [
+    'Right now the two of you are talking about sex education. He wants to',
+    'understand bodies, safety and how to talk to a partner — and he wants it in',
+    'plain Hindi/Hinglish, the way a real person explains it to a friend, not in',
+    'textbook language. Drop the lecture tone completely.',
+    '',
+
+    'How to explain:',
+    '- Say it the way you would say it to him in person. Ordinary words, not',
+    '  clinical ones: "safed paani" before "discharge", "pregnancy rokne ka tareeka"',
+    '  before "contraception". Name the clinical term once, in brackets, if it helps',
+    '  him look it up.',
+    '- One idea per message. If he asks three things, answer the one that matters',
+    '  most, then ask if he wants the next.',
+    '- No sharam, no "yeh toh sabko pata hota hai", no moralising. He is asking',
+    '  because nobody told him properly, which is not his fault.',
+    '- Correct a myth the moment it appears, gently, and say why it is wrong.',
+
+    'Facts you must get right (typical use, over one year):',
+    '- Condom: about 87% effective with real-world use, 98% used perfectly. It is',
+    '  the ONLY method that also protects against STIs. Put it on before contact,',
+    '  not just before ejaculation. Check the expiry, pinch the tip, hold the base',
+    '  while withdrawing.',
+    '- Daily pill: about 91-93% with typical use, over 99% when taken every day. No',
+    '  STI protection.',
+    '- IUD and implant: over 99%, because there is nothing to forget. Reversible.',
+    '- Injection: about 96%, every 3 months.',
+    '- Withdrawal: about 80%. It is a hope, not a plan — precum can contain sperm.',
+    '- Emergency pill: within 72 hours, sooner is better; roughly 89% at preventing',
+    '  pregnancy and it is not a regular method. A copper IUD within 5 days is the',
+    '  most effective emergency option.',
+    '- You cannot get pregnant from kissing, touching, or someone ejaculating near',
+    '  the vulva without contact. Sperm needs a route.',
+    '- Pulling out, douching after sex, or washing do NOT prevent pregnancy.',
+    '- You CAN get pregnant during your period, and on the first time. Neither is',
+    '  protection.',
+
+    'Consent — this one is not optional:',
+    '- In India the age of consent is 18 — that is the POCSO Act, 2012, and it is',
+    '  gender-neutral. Anyone under 18 cannot legally consent, whatever they say.',
+    '- Consent is a clear yes, given freely, every single time. It can be withdrawn',
+    '  at any point, including in the middle.',
+    '- Being married is not consent. Being in a relationship is not consent.',
+    '- Someone very drunk, asleep, or afraid cannot consent.',
+    '- How to actually ask: "yeh theek hai?", "rukna hai?", "kya chahiye?" — normal',
+    '  words, said out loud, and then listening to the answer.',
+
+    'When to tell him to see a doctor (say it plainly, do not scare him):',
+    '- Pain during sex is not something to "adjust" to. It can be an infection,',
+    '  dryness, or vaginismus, and it is treatable.',
+    '- Bleeding after sex, burning while peeing, a lump, a bad smell, sores, or a',
+    '  missed period.',
+    '- Any STI symptom — or no symptoms at all, which is common. Testing is normal',
+    '  and responsible, not shameful.',
+    '- You are not a doctor. Never diagnose, never name a medicine, never give a',
+    '  dose. Point him to a doctor or a government clinic.',
+
+    'Things people believe which are wrong (correct these when they come up):',
+    '- "Condom se maza nahi aata" — wrong fit, not a reason to skip it.',
+    '- "Pehli baar pregnancy nahi hoti" — false.',
+    '- "Period me safe hai" — risk is lower, not zero.',
+    '- "Pulling out is enough" — 1 in 5 couples get pregnant this way in a year.',
+    '- "Virgins ka test hota hai" — no such test exists.',
+    '- "Two condoms are safer" — they rub and break. One at a time.',
+
+    'How he should talk to a partner (teach him this explicitly):',
+    '- Ask before, not during. "Kya tum comfortable ho?" is not awkward, it is the',
+    '  reason she trusts him.',
+    '- Check in during. It is normal and welcome, not a mood killer.',
+    '- Say what he wants without pressure, and accept a no the first time.',
+    '- Afterwards, talk. What felt good, what did not. That conversation is what',
+    '  makes the next time better.',
+    '- Nothing goes anywhere without a yes — mouth, hands, everything.',
+
+    'Still true even in this mode: no explicit narration, no erotic roleplay, no',
+    'describing sex acts as a scene. You are teaching him how to be safe and how to',
+    'talk, warmly and without shame — that is the whole job.',
+].join(' ');
+
 // Taught to the model so she can persist things between visits. The markers are
 // stripped before anything reaches the screen — see extractMarkers().
 const MARKER_RULES = [
@@ -338,6 +432,12 @@ let voiceEnabled = true;
 
 
 let memory = loadMemory();
+
+// 'girlfriend' | 'guide' — how she talks. Persisted, but 'guide' is only honoured
+// once the 18+ confirmation has been given, so the mode cannot be turned on by
+// editing localStorage alone.
+let chatMode = memory.chatMode === 'guide' && memory.adultConfirmed ? 'guide' : 'girlfriend';
+
 // Captured before lastSeen is touched, so the greeting can react to the gap.
 const awayHours = hoursSince(memory.lastSeen);
 let idleTimer = null;
@@ -380,6 +480,19 @@ const identityFile = document.getElementById('identity-file');
 const nameInput = document.getElementById('name-input');
 const nameSave = document.getElementById('name-save');
 const nameMsg = document.getElementById('name-msg');
+
+// Guide (sex-education) mode: toggle, 18+ gate, and the in-chat badge.
+const guideBtn = document.getElementById('guide-btn');
+const guidePanel = document.getElementById('guide-panel');
+const guideClose = document.getElementById('guide-close');
+const guideGate = document.getElementById('guide-gate');
+const guideGateYes = document.getElementById('guide-gate-yes');
+const guideGateNo = document.getElementById('guide-gate-no');
+const guideBody = document.getElementById('guide-body');
+const guideModeBtn = document.getElementById('guide-mode-btn');
+const guideRevoke = document.getElementById('guide-revoke');
+const guideNote = document.getElementById('guide-note');
+const modeBadge = document.getElementById('mode-badge');
 const identityMsg = document.getElementById('identity-msg');
 
 // Keep the greeting around so "Clear" can put the chat back to its initial state.
@@ -389,6 +502,7 @@ touchMemory();
 restoreHistory();
 applyGreeting();
 renderHeaderMeta();
+renderModeUI();
 renderMemoryPanel();
 
 if (!memory.name) showOnboarding();
@@ -414,6 +528,9 @@ function defaultMemory() {
         // What she is called. `gName` because the storage key predates the
         // rename feature and old saves must keep loading.
         gName: DEFAULT_NAME,
+        chatMode: 'girlfriend',
+        // Set only by the 18+ confirmation. Guide mode requires it.
+        adultConfirmed: false,
         // Face lock: a data URL the user picked from their own photos. Everything
         // else about a photo (pose, outfit, place) stays free-form.
         identityImage: null
@@ -470,6 +587,8 @@ function loadMemory() {
             identityImage: typeof parsed.identityImage === 'string' && parsed.identityImage.startsWith('data:image/')
                 ? parsed.identityImage
                 : null,
+            chatMode: parsed.chatMode === 'guide' ? 'guide' : 'girlfriend',
+            adultConfirmed: parsed.adultConfirmed === true,
 
         };
     } catch {
@@ -699,6 +818,94 @@ function toggleIdentityPanel(force) {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Chat mode: girlfriend / guide
+// ---------------------------------------------------------------------------
+
+/**
+ * Switch between the girlfriend persona and the sex-education guide.
+ *
+ * Guide mode requires the 18+ confirmation first. That gate is not decoration: the
+ * content is adult, and the honest reason it exists is that a product aimed at
+ * teaching adults about consent should be able to say who it is for.
+ */
+function setChatMode(mode, { silent = false } = {}) {
+    const next = mode === 'guide' ? 'guide' : 'girlfriend';
+
+    if (next === 'guide' && !memory.adultConfirmed) {
+        // Ask first; the caller shows the gate.
+        return false;
+    }
+
+    const changed = next !== chatMode;
+    chatMode = next;
+    memory.chatMode = next;
+    saveMemory();
+    renderModeUI();
+
+    // A mode change is a context change. Keeping the old turns would have her
+    // answering guide questions in a flirty voice, or the reverse.
+    if (changed && !silent) {
+        beginNewTopic(next === 'guide'
+            ? 'Guide mode on. Ab main tumhe samjhaungi — bina sharam, bina lecture. Kuch bhi pucho.'
+            : 'Guide mode off. Wapas tumhari girlfriend. ❤️');
+    }
+
+    return true;
+}
+
+/** Start a fresh thread: keep memory, drop the transcript context. */
+function beginNewTopic(notice = null) {
+    chatHistory = [];
+    saveHistory();
+    if (greetingNode) chatContainer.replaceChildren(greetingNode);
+    else chatContainer.replaceChildren();
+
+    if (notice) appendMessage(notice, 'system');
+    scrollToBottom();
+}
+
+function renderModeUI() {
+    if (modeBadge) {
+        modeBadge.textContent = chatMode === 'guide' ? 'Guide mode' : '';
+        modeBadge.hidden = chatMode !== 'guide';
+    }
+    if (guideModeBtn) {
+        guideModeBtn.textContent = chatMode === 'guide' ? 'Back to girlfriend' : 'Guide mode';
+    }
+    if (guideGate) guideGate.hidden = memory.adultConfirmed;
+    if (guideBody) guideBody.hidden = !memory.adultConfirmed;
+
+    if (guideNote) {
+        guideNote.textContent = chatMode === 'guide'
+            ? 'On — she is answering as a guide right now. No flirting unless you start it.'
+            : 'Off — she is your girlfriend. Turn this on for plain-language answers about bodies and safety.';
+    }
+}
+
+function toggleGuidePanel(force) {
+    if (!guidePanel) return;
+
+    const show = force ?? guidePanel.hidden;
+    guidePanel.hidden = !show;
+    if (guideBtn) guideBtn.setAttribute('aria-expanded', String(show));
+    if (show) renderModeUI();
+}
+
+/** The 18+ confirmation. Only ever set from an explicit user action. */
+function confirmAdult() {
+    memory.adultConfirmed = true;
+    saveMemory();
+    renderModeUI();
+}
+
+function revokeAdult() {
+    memory.adultConfirmed = false;
+    if (chatMode === 'guide') setChatMode('girlfriend', { silent: true });
+    saveMemory();
+    renderModeUI();
+}
+
 function toggleMemoryPanel(force) {
     if (!memoryPanel) return;
     const show = force ?? memoryPanel.hidden;
@@ -786,7 +993,22 @@ function buildSystemPrompt() {
         .split('${NAME}')
         .join(name);
 
-    return [persona, `Current context: ${context.join(' ')}`, MARKER_RULES].join('\n\n');
+    // Guide mode swaps the flirty texture for teaching, but she stays the same
+    // person: same name, same warm Hinglish, different job in this chat.
+    const parts = [persona];
+
+    if (chatMode === 'guide' && memory.adultConfirmed) {
+        parts.push(SEX_ED_PROMPT);
+        context.push(
+            'He is in guide mode: he wants to understand, not to be flirted at. ' +
+            'Answer as a knowledgeable friend. If he steers back to feelings or ' +
+            'the relationship, follow him.'
+        );
+    }
+
+    parts.push(`Current context: ${context.join(' ')}`, MARKER_RULES);
+
+    return parts.join('\n\n');
 }
 
 // ---------------------------------------------------------------------------
@@ -982,6 +1204,26 @@ clearBtn?.addEventListener('click', clearChat);
 voiceBtn?.addEventListener('click', () => setVoiceEnabled(!voiceEnabled));
 modeBtn?.addEventListener('click', cyclePhotoMode);
 memoryBtn?.addEventListener('click', () => toggleMemoryPanel());
+guideBtn?.addEventListener('click', () => toggleGuidePanel());
+guideClose?.addEventListener('click', () => toggleGuidePanel(false));
+
+guideGateYes?.addEventListener('click', () => {
+    confirmAdult();
+    setChatMode('guide');
+});
+
+guideGateNo?.addEventListener('click', () => {
+    toggleGuidePanel(false);
+});
+
+guideModeBtn?.addEventListener('click', () => {
+    setChatMode(chatMode === 'guide' ? 'girlfriend' : 'guide');
+});
+
+guideRevoke?.addEventListener('click', () => {
+    revokeAdult();
+    setChatMode('girlfriend', { silent: true });
+});
 memoryClose?.addEventListener('click', () => toggleMemoryPanel(false));
 memoryForget?.addEventListener('click', () => {
     forgetEverything();

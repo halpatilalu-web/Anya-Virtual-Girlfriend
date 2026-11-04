@@ -167,6 +167,20 @@
             border-color: rgba(219, 39, 119, 0.5);
             background: rgba(219, 39, 119, 0.15);
         }
+        .mode-badge {
+            display: inline-block;
+            margin-left: 6px;
+            padding: 1px 7px;
+            border-radius: 9999px;
+            background: rgba(16, 185, 129, 0.18);
+            border: 1px solid rgba(16, 185, 129, 0.45);
+            color: #6ee7b7;
+            font-size: 9px;
+            font-weight: 700;
+            letter-spacing: 0.4px;
+            text-transform: uppercase;
+            vertical-align: middle;
+        }
         .memory-panel {
             border-top: 1px solid rgba(255, 255, 255, 0.08);
             background: rgba(0, 0, 0, 0.55);
@@ -447,8 +461,9 @@
                 <div class="status-dot"></div>
                 <button id="identity-btn" type="button" class="bot-identity" aria-controls="identity-panel" aria-expanded="false">
                     <span class="bot-title" id="bot-name">Priya</span>
-                    <span class="bot-subtitle">Your girlfriend &middot; Day 1</span>
+                    <span class="bot-subtitle">Your girlfriend &middot; Day 1<span id="mode-badge" class="mode-badge" hidden>Guide mode</span></span>
                 </button>
+                <button id="guide-btn" type="button" class="toggle-btn" aria-controls="guide-panel" aria-expanded="false" title="Sex education guide mode (18+)">Guide</button>
                 <button id="memory-btn" type="button" class="toggle-btn" aria-controls="memory-panel" aria-expanded="false" title="What she remembers">Memory</button>
             </div>
             <div class="header-actions">
@@ -488,6 +503,42 @@
                 face lock lagne par photos sasti paid route (~$0.006/photo) se aati hain.
                 Lock hatao to sab wapas ₹0.
             </p>
+        </section>
+
+        <section id="guide-panel" class="identity-panel" aria-label="Guide mode" hidden>
+            <div class="memory-head">
+                <span class="memory-title">Guide mode</span>
+                <button id="guide-close" type="button" class="memory-link">Close</button>
+            </div>
+
+            <!-- 18+ gate. Shown until the age confirmation is given. -->
+            <div id="guide-gate" hidden>
+                <p class="identity-hint">
+                    Ye mode adult (18+) sex education ke liye hai — consent, safety,
+                    body, aur partner se baat karne ka tareeka. Plain Hindi me, bina
+                    sharam, bina lecture.
+                </p>
+                <p class="identity-hint">
+                    <strong>Ye mode sirf 18 saal se upar ke liye hai.</strong>
+                    India me consent ki age 18 hai (POCSO Act, 2012).
+                </p>
+                <div class="identity-actions">
+                    <button id="guide-gate-yes" type="button" class="identity-btn">Main 18+ hu</button>
+                    <button id="guide-gate-no" type="button" class="memory-link">Cancel</button>
+                </div>
+            </div>
+
+            <div id="guide-body" hidden>
+                <p id="guide-note" class="identity-hint"></p>
+                <div class="identity-actions">
+                    <button id="guide-mode-btn" type="button" class="identity-btn">Guide mode</button>
+                    <button id="guide-revoke" type="button" class="memory-link">Turn off 18+ mode</button>
+                </div>
+                <p class="identity-hint">
+                    Ye padhne ke liye nahi boli jaati — bas samajhne ke liye.
+                    Doctor nahi hu, aur serious cheez me doctor hi jaana.
+                </p>
+            </div>
         </section>
 
         <section id="memory-panel" class="memory-panel" aria-label="What Priya remembers" hidden>
