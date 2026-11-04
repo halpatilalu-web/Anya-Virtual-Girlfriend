@@ -131,9 +131,9 @@ the photos stop looking like the same person.
 Limits worth knowing:
 
 - **Provider-dependent.** `input_image` is documented for every Puter image
-  provider, but *how closely* a model follows a reference varies — which is
-  exactly why Seedream 5.0 Pro is the default. Text-to-image-only models reject
-  references outright.
+  provider, but *how closely* a model follows a reference varies. Text-to-image
+  models reject references outright — including the free Pollinations endpoint,
+  which is why a locked face cannot use the free route at all.
 - **Storage is per browser.** The reference lives in `localStorage`, so it is not
   synced across devices and "Forget all" is the only wipe.
 - **A Drive folder cannot be read by the app.** Google Drive needs OAuth and a
@@ -296,7 +296,9 @@ Everything tunable lives at the top of `app.js`:
 | --- | --- |
 | `CHAT_MODEL` | Any model id from the [AI model directory](https://developer.puter.com/ai/models/). Defaults to `gpt-5.4-nano`. |
 | `freeImageUrl()` | Builds the free Pollinations request. `FREE_IMAGE_COOLDOWN_MS` (45 s) and `FREE_IMAGE_TIMEOUT_MS` live next to it. |
-| `IMAGE_OPTIONS` | Paid route only. Seedream 5.0 Pro at 1K. Swap in `gpt-image-2` (~7x cheaper) or `flux-schnell` to cut the bill. |
+| `IMAGE_OPTIONS` | Puter fallback only: `gpt-image-2`, `low`, 512×768. Pinned — do not swap in an expensive model. |
+| `VOICE_OPTIONS` | Polly, `hi-IN`, `Kajal`, `neural`. `hi-IN` is what makes Hindi read as Hindi. |
+| `SONG_PROSODY` | Tempo and break lengths used for sung lines. |
 | `IMAGE_FALLBACK_OPTIONS` | One retry route if the configured model or tier is rejected. |
 | `IMAGE_PROMPT_PREFIX` | The fixed identity description prepended to every photo prompt. Built from `IDENTITY_LOOK`. |
 | `IDENTITY_LOOK` | The words that describe her face. Change these to change how she looks when no reference photo is locked. |
@@ -321,6 +323,47 @@ full quota degrade to "no persistence" instead of breaking the chat.
   get less. The UI disables input while a request is in flight to stay well under it.
 - History is capped at the last 5 exchanges (`MAX_HISTORY_TURNS`).
 
+### Hinglish that sounds Indian, not robotic
+
+Replies are Hinglish written in Latin letters — `mujhe acha lagta hai`. Read with
+an English engine that is *"mujhe acha lagta hai"* pronounced as English: `hai`
+becomes "hi", `na` becomes "nah". That is exactly the robotic, wrong delivery that
+was reported.
+
+Kajal is a **documented fully bilingual voice** (Indian English *and* Hindi), and
+[Polly's own guide](https://docs.aws.amazon.com/polly/latest/dg/bilingual-voices.html)
+says a bilingual voice *"can differentiate between the languages and scripts"*,
+switching mid-sentence when the text mixes Devanagari and Latin. So:
+
+1. `toHindiScript()` rewrites the Hindi words as Devanagari (`mujhe` → `मुझे`)
+   and leaves English words alone (`message` stays `message`).
+2. The language code is `hi-IN`, which is what also makes numerals read in Hindi.
+3. The chat still shows Hinglish — only the speech is transliterated.
+
+Matching is word-level, so `hai` inside `chair` is untouched. The word list covers
+the patterns Hinglish actually uses, not all of Hindi.
+
+### Singing
+
+There is no melody: TTS speaks, it does not sing. What it *can* do is pace.
+
+`splitProseAndVerse()` separates quoted lyrics from the surrounding sentence, and
+`buildVersePhrase()` gives each line its own timing:
+
+| Effect | How |
+| --- | --- |
+| Slower line, so it does not rush | `rate="84%"`, `pitch="+1%"` |
+| A lift mid-line, like a singer taking breath | `<break time="220ms"/>` after commas |
+| A real breath between lines | `<break time="700ms"/>` |
+| A longer pause after the stanza | `<break time="1100ms"/>` |
+
+Adjacent quoted lines are merged into one stanza first — otherwise every line got
+a stanza pause and the song lost its flow.
+
+The persona tells her *when* to sing (he asks, he quotes a line, the mood is soft,
+a familiar line says it better than she could) and when **not** to (a serious
+problem, a health question, a fight — comfort first). Most messages are not songs.
+
 ### Free images (default)
 
 The app ships **free by default**. Nothing is charged, no account is needed and
@@ -342,8 +385,9 @@ The trade-offs are real, so the UI states them instead of hiding them:
 generated images to a public feed, and a private photo of her should never end up
 there.
 
-The header **Photos: Free / Paid** pill switches routes. Free is the default; Paid
-is only needed for the locked face (or if you simply want Seedream's quality).
+There is no paid-route toggle to click by accident. Free is the only automatic
+path; a locked face is the one thing that needs the paid Puter call, and it is
+pinned to the cheapest model.
 
 ### Image cost
 
@@ -353,14 +397,14 @@ free allowance goes furthest; images are the expensive part.
 
 | Model | Approx. cost / image | Notes |
 | --- | --- | --- |
-| `dola-seedream-5-0-pro` via BytePlus (**paid route**) | ~$0.045 at 1K, ~$0.09 at 2K | Best face consistency. The only route that accepts a reference photo |
-| `gpt-image-2` | ~$0.0059 | ~7x cheaper, noticeably looser at keeping one face |
+| `gpt-image-2` at `quality: 'low'` (**only Puter route**) | ~$0.0059 | The cheapest measured model, and the only route that accepts a reference photo |
+| ~~`dola-seedream-5-0-pro`~~ | ~~~$0.045~~ | **Removed.** ~7x the price and one accidental selection was real money. `app.js` no longer contains the model or its provider |
 | `black-forest-labs/flux-schnell` | ~$0.003 | Cloudflare route always returns `1024x1024`, so the portrait framing is lost |
 
-The default route is the **free Pollinations endpoint, which costs nothing**.
-Seedream is opt-in (`Photos: Paid`) because it costs ~7x more than `gpt-image-2`
-and is the only route that makes a locked face hold. If you never lock a face,
-you never pay anything.
+The default route is the **free Pollinations endpoint, which costs nothing**. There
+is no paid-model selector any more: the only way to reach a paid call is to lock a
+face, because the free endpoint has no image-to-image. That call is pinned to the
+cheapest model, so it cannot quietly cost more than ~$0.006 a photo.
 
 `quality: '1K'` is pinned in `IMAGE_OPTIONS` (Pro's cheapest tier) along with an
 explicit `provider` and `model`, and a test enforces all three — an upstream

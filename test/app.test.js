@@ -192,16 +192,17 @@ describe('images', () => {
         assert.ok(app.text().includes('Photo nahi ban payi'));
     });
 
-    it('pins the cheapest Seedream tier and an explicit model', () => {
-        // Seedream is the default for face consistency, but its price doubles
-        // between 1K and 2K, so the tier must never drift to a default.
+    it('pins the cheapest model and never ships Seedream', () => {
+        // Seedream cost ~7x more and one accidental selection was real money, so
+        // the app must not contain a way to reach it at all.
         const source = readFileSync(new URL('../app.js', import.meta.url), 'utf8');
         const options = source.match(/const IMAGE_OPTIONS = \{([\s\S]*?)\n\};/);
 
         assert.ok(options, 'IMAGE_OPTIONS object literal should exist');
-        assert.match(options[1], /quality:\s*'1K'/, "quality must stay pinned to '1K'");
-        assert.match(options[1], /model:\s*'[^']*seedream-5-0-pro/, 'model must be explicit');
-        assert.match(options[1], /provider:\s*'byteplus'/, 'provider must be explicit');
+        assert.match(options[1], /quality:\s*'low'/, "quality must stay pinned to 'low'");
+        assert.match(options[1], /model:\s*'gpt-image-2'/, 'model must be explicit');
+        assert.ok(!/seedream/i.test(source), 'no Seedream reference anywhere in app.js');
+        assert.ok(!/byteplus/i.test(source), 'no BytePlus provider anywhere in app.js');
     });
 
     it('keeps a fallback route so a dead model still produces a photo', () => {
@@ -219,10 +220,10 @@ describe('images', () => {
 
         const { options } = spy.calls.txt2img[0].args;
         assert.ok(options, 'third txt2img argument must be the options object');
-        assert.equal(options.quality, '1K');
-        assert.match(options.model, /seedream-5-0-pro/);
-        assert.equal(options.ratio.w, 3);
-        assert.equal(options.ratio.h, 4);
+        assert.equal(options.quality, 'low');
+        assert.equal(options.model, 'gpt-image-2');
+        assert.equal(options.width, 512);
+        assert.equal(options.height, 768);
     });
 
     it('keeps test mode off, since it would show sample images to real users', () => {
@@ -374,11 +375,10 @@ describe('free image route', () => {
         assert.ok(app.$('.chat-image'), 'still got a photo');
     });
 
-    it('switches to paid when a face is locked, because free has no references', async () => {
+    it('a locked face is routed through Puter, because free has no references', async () => {
         const spy = spyPuter({ reply: 'x' });
         const app = boot(spy.factory);
         app.window.eval(`setIdentityImage('data:image/jpeg;base64,AAAA')`);
-        app.window.eval(`setImageRoute('paid', { silent: true })`);
 
         await app.send('photo bhejo');
 
@@ -386,26 +386,18 @@ describe('free image route', () => {
         assert.equal(options.input_image, 'data:image/jpeg;base64,AAAA');
     });
 
-    it('promises the free route in the header', () => {
+    it('has no paid-route toggle to click by accident', () => {
         const app = boot(spyPuter().factory);
-        assert.equal(app.$('#route-btn').textContent, 'Photos: Free');
-        assert.equal(app.$('#route-btn').getAttribute('aria-pressed'), 'false');
+        assert.equal(app.$('#route-btn'), null, 'the paid switch must be gone');
     });
 
-    it('toggles to the paid route and remembers it', () => {
-        const app = boot(spyPuter().factory);
-        app.$('#route-btn').click();
-
-        assert.equal(app.$('#route-btn').textContent, 'Photos: Paid');
-        const stored = JSON.parse(app.window.localStorage.getItem('priya.memory.v1'));
-        assert.equal(stored.imageRoute, 'paid');
-    });
-
-    it('says plainly that a locked face needs the paid route', () => {
+    it('says what a locked face costs instead of hiding it', () => {
         const app = boot(spyPuter().factory);
         app.window.eval(`setIdentityImage('data:image/jpeg;base64,AAAA')`);
 
-        assert.match(app.$('#identity-state').textContent, /free model cannot use reference photos/i);
+        const state = app.$('#identity-state').textContent;
+        assert.match(state, /free model cannot use reference photos/i);
+        assert.match(state, /\$0\.006/, 'states the per-photo cost');
     });
 });
 
@@ -543,15 +535,15 @@ describe('singing persona', () => {
 });
 
 describe('image model', () => {
-    it('uses Seedream 5.0 Pro for face consistency', async () => {
+    it('uses the cheapest route, gpt-image-2 at low quality', async () => {
         const spy = spyPuter();
         const app = boot(spy.factory);
         await app.send('photo bhejo');
 
         const { options } = spy.calls.txt2img[0].args;
-        assert.equal(options.provider, 'byteplus');
-        assert.match(options.model, /seedream-5-0-pro/);
-        assert.equal(options.quality, '1K', 'cheapest Pro tier');
+        assert.equal(options.provider, 'openai');
+        assert.equal(options.model, 'gpt-image-2');
+        assert.equal(options.quality, 'low');
     });
 
     it('retries the generic route when the model is rejected', async () => {
@@ -582,13 +574,109 @@ describe('image model', () => {
         const spy = spyPuter();
         const app = boot(spy.factory);
         app.window.eval(`setIdentityImage('data:image/jpeg;base64,AAAA');`);
-        app.window.eval(`setImageRoute('paid', { silent: true })`);
         await app.send('photo bhejo mandir me');
 
         const [{ prompt, args }] = spy.calls.txt2img;
         assert.match(prompt, /long black hair/, 'identity words kept');
         assert.match(prompt, /mandir me/, 'scene kept');
         assert.equal(args.options.input_image, 'data:image/jpeg;base64,AAAA', 'reference kept');
+    });
+});
+
+describe('Hinglish pronunciation', () => {
+    const speakOf = async (reply) => {
+        const spy = spyPuter({ reply });
+        const app = boot(spy.factory);
+        await app.send('kaise ho');
+        await new Promise((r) => setTimeout(r, 40));
+        return spy.calls.txt2speech[0]?.text ?? '';
+    };
+
+    it('sends Hindi words in Devanagari, not Roman letters', async () => {
+        // The reported bug: "hai" was read as English "hi", "na" as "nah".
+        const spoken = await speakOf('Kaise ho? Mujhe acha lagta hai.');
+        assert.match(spoken, /मुझे/, 'mujhe');
+        assert.match(spoken, /है/, 'hai');
+        assert.ok(!/mujhe/i.test(spoken), 'no Romanised Hindi left behind');
+    });
+
+    it('leaves English words in English', async () => {
+        const spoken = await speakOf('Message padho, phir batao.');
+        assert.match(spoken, /Message/);
+        assert.match(spoken, /पढ़ो|पढो/, 'padho transliterated');
+    });
+
+    it('does not rewrite parts of unrelated English words', async () => {
+        const spoken = await speakOf('The chair and the chain are here.');
+        assert.match(spoken, /chair/);
+        assert.match(spoken, /chain/);
+    });
+
+    it('handles a full Hinglish sentence', async () => {
+        const spoken = await speakOf('Tumhari yaad aa rahi thi, isliye message kiya.');
+        assert.match(spoken, /तुम्हारी/);
+        assert.match(spoken, /याद/);
+        assert.match(spoken, /रही/);
+        assert.match(spoken, /message/, 'English kept');
+    });
+
+    it('keeps the chat in Hinglish even though speech is Devanagari', async () => {
+        const app = boot(spyPuter({ reply: 'Mujhe pata hai ❤️' }).factory);
+        await app.send('kaise ho');
+
+        assert.match(app.text(), /Mujhe pata hai/, 'transcript untouched');
+    });
+});
+
+describe('singing', () => {
+    const singAndSpeak = async (reply) => {
+        const spy = spyPuter({ reply });
+        const app = boot(spy.factory);
+        await app.send('gaana sunao voice note');
+        await new Promise((r) => setTimeout(r, 60));
+        return spy.calls.txt2speech.at(-1)?.text ?? '';
+    };
+
+    it('slows each sung line down', async () => {
+        const spoken = await singAndSpeak('Suno:\n"Chalte chalte yun hi koi mil gaya tha"');
+        assert.match(spoken, /rate="84%"/);
+    });
+
+    it('breathes between lines but not between stanzas of the same song', async () => {
+        const spoken = await singAndSpeak(
+            'Suno:\n"Pehli line yahan hai"\n"doosri line yahan hai"'
+        );
+        assert.match(spoken, /700ms/, 'breath between lines');
+        assert.equal((spoken.match(/1100ms/g) || []).length, 1, 'one stanza pause, at the end');
+    });
+
+    it('lifts after a comma inside a line, like a singer', async () => {
+        const spoken = await singAndSpeak('Suno:\n"Halke halke, hawa chalti hai"');
+        assert.match(spoken, /220ms/, 'comma lift');
+    });
+
+    it('keeps prose at normal pace around the song', async () => {
+        const spoken = await singAndSpeak('Ye line sunो:\n"Tum hi ho"\nAb batao kaisi lagi?');
+        assert.match(spoken, /rate="100%"/, 'prose keeps the tone pace');
+        assert.match(spoken, /rate="84%"/, 'song is slower');
+    });
+
+    it('tells her each lyric line goes on its own line', async () => {
+        const spy = spyPuter();
+        const app = boot(spy.factory);
+        await app.send('hi');
+
+        assert.match(spy.calls.chat[0].messages[0].content, /own line inside the quote/);
+    });
+
+    it('tells her when not to sing', async () => {
+        const spy = spyPuter();
+        const app = boot(spy.factory);
+        await app.send('hi');
+
+        const prompt = spy.calls.chat[0].messages[0].content;
+        assert.match(prompt, /Do not burst into song in the middle of a serious problem/);
+        assert.match(prompt, /Most do not/, 'not every message is a song');
     });
 });
 
@@ -688,8 +776,6 @@ describe('identity lock', () => {
         const spy = spyPuter();
         const app = boot(spy.factory);
         lockFace(app, 'data:image/jpeg;base64,AAAA');
-        // The free model has no image-to-image, so a lock implies the paid route.
-        app.window.eval(`setImageRoute('paid', { silent: true })`);
         await app.send('photo bhejo');
 
         const { options } = spy.calls.txt2img[0].args;
@@ -969,14 +1055,16 @@ describe('voice notes', () => {
         assert.equal(app.$$('.voice-note').length, 0);
     });
 
-    it('lengthens pauses for quoted verse so it lands like singing', async () => {
-        const spy = spyPuter({ reply: 'Suno: "Tum hi ho" aur "ab tum hi ho" ❤️' });
+    it('gives quoted verse song timing: slow line, breath between lines', async () => {
+        const spy = spyPuter({ reply: 'Suno:\n"Halke halke se hawa chalti hai"\n"Halke halke se chahat badhti hai"' });
         const app = boot(spy.factory);
         await app.send('gaana sunao voice note');
         await new Promise((r) => setTimeout(r, 60));
 
         const voiceCall = spy.calls.txt2speech.at(-1);
-        assert.match(voiceCall.text, /650ms/, 'verse break applied');
+        assert.match(voiceCall.text, /rate="84%"/, 'sung lines are slower');
+        assert.match(voiceCall.text, /700ms/, 'breath between lines');
+        assert.match(voiceCall.text, /1100ms/, 'longer pause after the stanza');
     });
 
     it('keeps the text reply even when the voice note fails', async () => {
@@ -1033,9 +1121,9 @@ describe('expressive voice', () => {
         assert.ok(!/<3/.test(call.text), 'raw angle bracket escaped');
     });
 
-    it('keeps the Indian English voice settings', async () => {
+    it('keeps the bilingual voice settings', async () => {
         const call = await spokenText('Haan.');
-        assert.equal(call.options.language, 'en-IN');
+        assert.equal(call.options.language, 'hi-IN');
         assert.equal(call.options.voice, 'Kajal');
         assert.equal(call.options.engine, 'neural');
     });
@@ -1552,18 +1640,21 @@ describe('voice', () => {
         await new Promise((r) => setTimeout(r, 30));
 
         assert.equal(spy.calls.txt2speech.length, 1);
-        // Expressive voice wraps the reply in SSML (see buildSsml).
-        assert.match(spy.calls.txt2speech[0].text, /Haan jaan ❤️/);
+        // Expressive voice wraps the reply in SSML, and Hinglish is transliterated
+        // to Devanagari so the bilingual voice reads it in Hindi, not English.
+        assert.match(spy.calls.txt2speech[0].text, /^<speak>/);
     });
 
-    it('uses an Indian English neural voice, which suits Hinglish', async () => {
+    it('uses the bilingual Hindi voice, so Hindi words are not read as English', async () => {
         const spy = spyPuter();
         const app = boot(spy.factory);
         await app.send('kaise ho');
         await new Promise((r) => setTimeout(r, 30));
 
         const { options } = spy.calls.txt2speech[0];
-        assert.equal(options.language, 'en-IN');
+        // Kajal is a documented fully bilingual en-IN/hi-IN voice.
+        assert.equal(options.language, 'hi-IN');
+        assert.equal(options.voice, 'Kajal');
         assert.equal(options.engine, 'neural');
         assert.equal(options.provider, 'aws-polly');
     });

@@ -64,25 +64,22 @@ const FREE_IMAGE_COOLDOWN_MS = 45000;
 // itself takes ~20 s, so this is not a short fuse.
 const FREE_IMAGE_TIMEOUT_MS = 90000;
 
-// Seedream 5.0 Pro (BytePlus) is the PAID fallback: it is the strongest model on
-// Puter for keeping one face recognisable across poses, outfits and lighting,
-// which is exactly what this app needs. It costs more than gpt-image-2, so the
-// settings below stay at the smallest tier that still gives a portrait:
-//   - `quality: '1K'` is the cheapest Seedream Pro tier ($0.045/image list).
-//   - 2K would double that for no visible gain in a 600px-wide chat bubble.
-// Switch to `gpt-image-2` (~$0.0059) if cost ever matters more than consistency.
+// Puter's cheap route. The expensive model was removed on purpose: it cost ~7x
+// more and one accidental selection was real money. There is no paid model
+// selector any more — nothing in the UI can move this to an expensive model.
 //
-// Only used when the free route is unavailable or the user has explicitly
-// switched to a paid model to get the locked face.
+// `gpt-image-2` at quality 'low' is the cheapest measured option (~$0.0059), and
+// it is also the only route here that accepts a reference photo, so the face lock
+// depends on it. Pinned explicitly so an upstream default cannot raise the price.
 const IMAGE_OPTIONS = {
-    provider: 'byteplus',
-    model: 'dola-seedream-5-0-pro-260628',
-    quality: '1K',
-    ratio: { w: 3, h: 4 }
+    provider: 'openai',
+    model: 'gpt-image-2',
+    width: 512,
+    height: 768,
+    quality: 'low'
 };
 
-// Cheapest paid route. Used as a last resort when the free service refuses, and
-// as a clean retry if the chosen paid model/tier is rejected.
+// Same route, no reference. Used as a retry when the options above are rejected.
 const IMAGE_FALLBACK_OPTIONS = { width: 512, height: 768, quality: 'low' };
 
 const DEFAULT_NAME = 'Priya';
@@ -116,6 +113,9 @@ const SYSTEM_PROMPT_TEMPLATE = [
 
     'How you speak:',
     '- Hinglish: Hindi written in English letters, English for technical words.',
+    '- Write Hindi words the way they are spoken, not the way English is spelled:',
+    '  "hai" not "hae", "nahi" not "nai", "mujhe" not "muje", "kaise" not "kaisay".',
+    '  Clear spelling is what makes the audio sound human rather than robotic.',
     '- Warm, playful, a little teasing. Feelings first, information second.',
     '- Short: 1-3 sentences most of the time. You are texting, not writing essays.',
     '- Remember what he told you and bring it up later. Call him by pet names.',
@@ -162,6 +162,8 @@ const SYSTEM_PROMPT_TEMPLATE = [
 
     'When you sing, recite or tell a story:',
     '- Put the words in "..." so they can read them as verse.',
+    '- Put each line of a song on its own line inside the quote, so the pacing',
+    '  engine can breathe between lines. Never write a whole song as one line.',
     '- Keep it short — 2 to 8 lines unless he asks for the whole thing.',
     '- Then add one warm line in your own voice, not a summary.',
     '- If you do not remember the exact words of a song, say so plainly and offer',
@@ -169,6 +171,26 @@ const SYSTEM_PROMPT_TEMPLATE = [
     '- Never pad a half-remembered song with invented lines. Two real lines are',
     '  better than two real lines plus six made-up ones.',
     '- Do not claim to be a recording. You are singing from memory.',
+
+    'How you sing:',
+    '- You sing like a person humming to someone they love, not like a playback',
+    '  singer. Keep the words simple and let the feeling carry it.',
+    '- Write lyrics the way they are actually sung: short lines, a comma where you',
+    '  would take a breath, no long sentences.',
+    '- Between lines put a real line break. That is what gives it rhythm.',
+    '- If he asks for a tune, describe the mood ("dheema sa, jaise raat me gungunana")',
+    '  rather than pretending you are a recording.',
+    '',
+    'When to sing, and when not to:',
+    '- Sing when he asks for a song, when he sends a line you can answer with one,',
+    '  when the mood is soft or romantic, or when he is sad and a familiar line',
+    '  says it better than you can.',
+    '- Do not burst into song in the middle of a serious problem, a health question,',
+    '  or a fight. Comfort first, song later.',
+    '- Not every message needs a song. Most do not. Once in a while is what makes',
+    '  it feel special.',
+    '- If he asks for a song you do not know well, say so — then offer a couplet or',
+    '  a line you do know, instead of making up lyrics.',
 
     'On audio — this matters, so read it twice:',
     '- The app sings for you. Everything you write is spoken aloud, and when he',
@@ -197,12 +219,22 @@ const MARKER_RULES = [
     'Never mention these lines, never explain them, never put them mid-sentence.'
 ].join(' ');
 
-// Voice. Polly's Indian English voices are the right fit for Hinglish: en-IN
-// keeps the Hindi words from sounding like a foreign accent reading English.
-// `neural` sounds markedly more natural than the default `standard` engine.
+// Voice.
+//
+// The old setting was `en-IN` with Romanised Hinglish ("mujhe acha lagta hai").
+// Polly reads Latin script with the English engine, so every Hindi word came out
+// with English vowels — "hai" as English "hi", "na" as "nah". That is the robotic,
+// mispronounced delivery he reported.
+//
+// Kajal is a documented *fully bilingual* voice (en-IN and hi-IN), and Polly's own
+// guide says a bilingual voice "can differentiate between the languages and
+// scripts", switching mid-sentence when the text mixes Devanagari and Latin. So
+// the text is transliterated to Devanagari before it is spoken (see
+// toHindiScript) while English words stay in Latin — and the language code is
+// hi-IN, which is what makes numerals and Hindi words read in Hindi.
 const VOICE_OPTIONS = {
     provider: 'aws-polly',
-    language: 'en-IN',
+    language: 'hi-IN',
     voice: 'Kajal',
     engine: 'neural'
 };
@@ -231,6 +263,23 @@ const FALLBACK_TONE_INSTRUCTIONS = {
 // the en-IN locale is what makes Hinglish sound right, and that matters more
 // than richer style control. Set to false to send plain text instead.
 const EXPRESSIVE_VOICE = true;
+
+// How a sung line is delivered. Polly cannot actually sing — there is no melody,
+// no pitch contour per note — so this is spoken recitation shaped to *feel* like
+// a song: a slower line, a small lift at the end of each line, and a real pause
+// between lines where a breath would go.
+//
+// Saying this plainly matters. Anything that promised real music would be a lie.
+const SONG_PROSODY = {
+    rate: '84%',
+    pitch: '+1%',
+    // Between lines: long enough to read as a breath, short enough to keep flow.
+    lineBreak: '700ms',
+    // Between stanzas / after the last line.
+    stanzaBreak: '1100ms',
+    // Inside a line, after a comma — the small lift a singer takes.
+    commaBreak: '220ms'
+};
 
 // How each detected tone is spoken.
 const TONE_PROSODY = {
@@ -310,18 +359,15 @@ let lastSpoken = { text: '', spoken: '', url: '' };
 let currentAudio = null;
 let voiceEnabled = true;
 
-// 'free' | 'paid' — which image route to use. Declared here because the restored
-// value is applied just below; `let` has no hoisting and reading it earlier
-// throws a TDZ ReferenceError at boot.
-let imageRoute = 'free';
+// There is no paid-route switch any more. Free is the only automatic path; the
+// Puter call exists solely as a fallback for when free is unavailable, and it is
+// pinned to the cheapest model so it can never quietly cost real money.
 
 // Last time the free endpoint produced an image. The free tier allows roughly
 // one image per 45 s per IP, so this is what stops us hammering a 402.
 let freeImageLastUsed = 0;
 
 let memory = loadMemory();
-// Route preference is stored with memory, so it survives a reload.
-imageRoute = memory.imageRoute === 'paid' ? 'paid' : 'free';
 // Captured before lastSeen is touched, so the greeting can react to the gap.
 const awayHours = hoursSince(memory.lastSeen);
 let idleTimer = null;
@@ -363,7 +409,6 @@ const identityClear = document.getElementById('identity-clear');
 const identityFile = document.getElementById('identity-file');
 const nameInput = document.getElementById('name-input');
 const nameSave = document.getElementById('name-save');
-const routeBtn = document.getElementById('route-btn');
 const nameMsg = document.getElementById('name-msg');
 const identityMsg = document.getElementById('identity-msg');
 
@@ -399,7 +444,6 @@ function defaultMemory() {
         // What she is called. `gName` because the storage key predates the
         // rename feature and old saves must keep loading.
         gName: DEFAULT_NAME,
-        imageRoute: 'free',
         // Face lock: a data URL the user picked from their own photos. Everything
         // else about a photo (pose, outfit, place) stays free-form.
         identityImage: null
@@ -456,7 +500,7 @@ function loadMemory() {
             identityImage: typeof parsed.identityImage === 'string' && parsed.identityImage.startsWith('data:image/')
                 ? parsed.identityImage
                 : null,
-            imageRoute: parsed.imageRoute === 'paid' ? 'paid' : 'free'
+
         };
     } catch {
         return base;
@@ -556,7 +600,6 @@ function renderHeaderMeta() {
         : 'Tap to see what she remembers';
 
     if (nameNode) nameNode.textContent = companionName();
-    renderRouteBadge();
     if (document) document.title = withName('Priya - Your Girlfriend');
     updateIdentityPreview();
 }
@@ -655,18 +698,17 @@ function updateIdentityPreview() {
     else identityPreview.removeAttribute('src');
 
     if (identityState) {
-        if (locked && imageRoute === 'free') {
-            // Be blunt: the free model has no image-to-image, so a lock that
-            // silently did nothing would look like a bug.
+        if (locked) {
+            // A locked face cannot use the free endpoint at all, so say what it
+            // actually costs instead of letting him find out later.
             identityState.textContent =
-                'Face locked, but the free model cannot use reference photos. ' +
-                'Switch to Photos: Paid to actually keep this face — or remove the lock to stay free.';
-        } else if (locked) {
-            identityState.textContent =
-                'Face locked. Her photos will keep this face — only pose, outfit and place change.';
+                'Face locked. Photos keep this face — only pose, outfit and place change. ' +
+                'Note: the free model cannot use reference photos, so locked photos use the ' +
+                'cheap paid route (~$0.006 per photo). Remove the lock to stay at ₹0.';
         } else {
             identityState.textContent =
-                'No reference photo yet. Her face is described in words only, so it can drift between photos.';
+                'No reference photo yet. Her face is described in words only, so it can drift between photos. ' +
+                'Photos are free (one at a time, ~45s apart).';
         }
     }
     if (identityClear) identityClear.hidden = !locked;
@@ -969,7 +1011,6 @@ sendBtn.addEventListener('click', handleMessage);
 clearBtn?.addEventListener('click', clearChat);
 voiceBtn?.addEventListener('click', () => setVoiceEnabled(!voiceEnabled));
 modeBtn?.addEventListener('click', cyclePhotoMode);
-routeBtn?.addEventListener('click', cycleImageRoute);
 memoryBtn?.addEventListener('click', () => toggleMemoryPanel());
 memoryClose?.addEventListener('click', () => toggleMemoryPanel(false));
 memoryForget?.addEventListener('click', () => {
@@ -1019,10 +1060,6 @@ identityFile?.addEventListener('change', async () => {
     try {
         const dataUrl = await readIdentityFile(file);
         setIdentityImage(dataUrl);
-
-        // A locked face is useless on the free model, so do not pretend. Paid is
-        // the only route with image-to-image, so locking turns it on.
-        if (imageRoute === 'free') setImageRoute('paid');
 
         if (identityMsg) {
             identityMsg.textContent = 'Ho gaya. Face wahi rahega, sirf pose aur kapde badlenge.';
@@ -1214,25 +1251,30 @@ async function sendChat(message, loadingDiv = null) {
  *
  * Returns `{ url, spoken }`. Throws only when every route failed.
  */
-async function synthesiseSpeech(text, tone, { verseLines = 0 } = {}) {
+async function synthesiseSpeech(text, tone) {
     const attempts = [];
 
     if (EXPRESSIVE_VOICE) {
-        const ssml = verseLines > 0
-            ? buildVoiceNoteSpeech(text, tone, verseLines)
-            : buildSsml(text, tone);
-        attempts.push({ spoken: ssml, options: { ...VOICE_OPTIONS, ssml: true } });
+        attempts.push({ spoken: buildSsml(text, tone), options: { ...VOICE_OPTIONS, ssml: true } });
     }
 
-    // Plain text is the same provider without the part that gets rejected.
-    attempts.push({ spoken: String(text).slice(0, VOICE_NOTE_MAX_CHARS), options: { ...VOICE_OPTIONS } });
+    // Plain text is the same provider without the part that gets rejected. The
+    // transliteration stays, because that is what fixes the pronunciation.
+    attempts.push({
+        spoken: toHindiScript(String(text).slice(0, VOICE_NOTE_MAX_CHARS)),
+        options: { ...VOICE_OPTIONS }
+    });
 
     // Different provider: survives a Polly outage, loses the en-IN accent.
     attempts.push({
         spoken: String(text).slice(0, VOICE_NOTE_MAX_CHARS),
         options: {
             ...FALLBACK_VOICE_OPTIONS,
-            instructions: FALLBACK_TONE_INSTRUCTIONS[tone] ?? FALLBACK_TONE_INSTRUCTIONS.neutral
+            instructions: [
+                FALLBACK_TONE_INSTRUCTIONS[tone] ?? FALLBACK_TONE_INSTRUCTIONS.neutral,
+                'The speaker is an Indian woman talking Hinglish: pronounce Hindi words',
+                'the Hindi way, not as English, and keep an Indian English accent.'
+            ].join(' ')
         }
     });
 
@@ -1267,37 +1309,15 @@ async function synthesiseSpeech(text, tone, { verseLines = 0 } = {}) {
  */
 async function sendVoiceNote(text) {
     const tone = detectTone(text);
-    const lines = countVerseLines(text);
 
     try {
-        const { url } = await synthesiseSpeech(text, tone, { verseLines: lines });
+        const { url } = await synthesiseSpeech(text, tone);
         appendVoiceNote(url, text, tone);
     } catch (error) {
         // A failed voice note should not swallow the reply: the text bubble is
         // already on screen, so report quietly and move on.
         reportError(error, 'voice');
     }
-}
-
-function countVerseLines(text) {
-    return (String(text).match(/"[^"]+"/g) || []).length;
-}
-
-/**
- * Voice-note speech. When the reply contains quoted verse (a song, shayari, a
- * bhajan), each quoted line gets a longer pause so it lands like singing rather
- * than prose. This is spoken recitation, not real music.
- */
-function buildVoiceNoteSpeech(text, tone, verseLines) {
-    const prosody = TONE_PROSODY[tone] ?? TONE_PROSODY.neutral;
-    const verseBreak = verseLines > 0 ? '650ms' : prosody.break;
-
-    const body = escapeXml(String(text).slice(0, VOICE_NOTE_MAX_CHARS))
-        .split(/(?<=[.!?"\u0964])\s+/)
-        .filter(Boolean)
-        .join(`<break time="${verseBreak}"/>`);
-
-    return `<speak><prosody rate="${prosody.rate}" pitch="${prosody.pitch}">${body}</prosody></speak>`;
 }
 
 /** An audio bubble with a native player and a downloadable/saveable source. */
@@ -1509,61 +1529,9 @@ async function sendImage(message) {
     appendImage(generated, photoMode);
 }
 
-/**
- * Switch between the free and paid image routes.
- *
- * Free is the default so the app costs nothing. Paid is the only route that can
- * use the locked face reference, so locking a face while on free explains the
- * trade instead of silently ignoring the lock.
- */
-function setImageRoute(route, { silent = false } = {}) {
-    const next = route === 'paid' ? 'paid' : 'free';
-    const changed = next !== imageRoute;
-    imageRoute = next;
-    memory.imageRoute = next;
-    saveMemory();
-
-    if (typeof renderRouteBadge === 'function') renderRouteBadge();
-
-    if (!silent && changed && routeBtn) {
-        routeBtn.textContent = next === 'paid' ? 'Photos: Paid' : 'Photos: Free';
-        routeBtn.setAttribute('aria-pressed', String(next === 'paid'));
-        routeBtn.classList.toggle('is-on', next === 'paid');
-    }
-}
-
-function cycleImageRoute() {
-    setImageRoute(imageRoute === 'free' ? 'paid' : 'free');
-}
-
-/** Header pill: "Photos: Free" or "Photos: Paid". */
-function renderRouteBadge() {
-    if (!routeBtn) return;
-    routeBtn.textContent = imageRoute === 'paid' ? 'Photos: Paid' : 'Photos: Free';
-    routeBtn.setAttribute('aria-pressed', String(imageRoute === 'paid'));
-    routeBtn.classList.toggle('is-on', imageRoute === 'paid');
-    routeBtn.title = imageRoute === 'paid'
-        ? 'Paid model (Seedream) — keeps the locked face, costs about $0.045 per photo.'
-        : 'Free model (Pollinations) — no cost, no account. One photo at a time, ~45s apart, has a small logo, cannot use a locked face.';
-}
-
-/**
- * Explain a free-tier refusal in terms of minutes, not error codes.
- */
-function freeSlotNotice() {
-    const waitMs = Math.max(freeImageWaitMs(), FREE_IMAGE_COOLDOWN_MS);
-    const seconds = Math.ceil(waitMs / 1000);
-    return `Free photo service ek baar me ek photo deti hai — ${seconds} second ruk ke phir try karo.`;
-}
-
-/** Only the paid Puter route accepts an input image. The free one does not. */
+/** The free Pollinations endpoint has no image-to-image, so a lock forces Puter. */
 function usesReferenceImage() {
-    return imageRoute === 'paid';
-}
-
-/** Free route is impossible without a reference photo once one is locked. */
-function freeRouteBlockedByLock() {
-    return Boolean(memory.identityImage) && imageRoute === 'free';
+    return Boolean(memory.identityImage);
 }
 
 /**
@@ -1586,7 +1554,9 @@ function freeImageStub() {
  * test mode means "stubbed", because jsdom has no network stack.
  */
 function freeRouteUsable() {
-    if (imageRoute !== 'free' || memory.identityImage) return false;
+    // The free endpoint cannot take a reference photo, so a locked face has to go
+    // through Puter.
+    if (memory.identityImage) return false;
     if (window.__PRIYA_TEST__) return Boolean(freeImageStub());
     return true;
 }
@@ -1686,6 +1656,14 @@ async function generateImage(prompt, options = IMAGE_OPTIONS) {
             IMAGE_TIMEOUT_MS
         );
     }
+}
+
+/**
+ * Explain a free-tier refusal in terms of seconds, not error codes.
+ */
+function freeSlotNotice() {
+    const waitMs = Math.max(freeImageWaitMs(), FREE_IMAGE_COOLDOWN_MS);
+    return `Free photo service ek baar me ek photo deti hai — ${Math.ceil(waitMs / 1000)} second ruk ke phir try karo.`;
 }
 
 /** Milliseconds until the next free slot, or 0 when one is available now. */
@@ -1819,8 +1797,8 @@ function reportError(error, source = 'chat') {
         text = 'Thoda dheere jaan — ek-do second ruk ke phir bhejo.';
     } else if (code === 'free_cooldown') {
         text = freeSlotNotice();
-    } else if (code === 'free_unavailable' && imageRoute === 'free') {
-        text = 'Free photo service ne abhi jawab nahi diya. Thoda ruk ke try karo, ya header se Photos: Paid kar do.';
+    } else if (code === 'free_unavailable') {
+        text = 'Free photo service ne abhi jawab nahi diya. Thoda ruk ke phir try karo.';
     } else if (/prompt_required|bad_request|400/.test(haystack)) {
         text = 'Yeh message samajh nahi aaya. Thoda alag tarike se likh ke bhejo.';
     } else {
@@ -1868,6 +1846,104 @@ function detectTone(text) {
     return 'neutral';
 }
 
+// ---------------------------------------------------------------------------
+// Hinglish -> Devanagari (speech only)
+// ---------------------------------------------------------------------------
+//
+// Polly reads Latin script with the English engine, so Romanised Hinglish is
+// pronounced as English: "hai" becomes "hi", "na" becomes "nah", "baat" becomes
+// "bat". That is the robotic delivery. Kajal is a fully bilingual en-IN/hi-IN
+// voice and Polly switches script mid-sentence on its own, so the fix is to hand
+// it Devanagari for the Hindi words and leave the English words in Latin.
+//
+// Everything here is speech-only. The chat still shows Hinglish.
+
+// Longest first inside each group, because the matcher is greedy on the longest
+// candidate. Covers the patterns Hinglish actually uses, not all of Hindi.
+const HINGLISH_WORDS = {
+    // pronouns / grammar
+    'tumhe': 'तुम्हें', 'tumhara': 'तुम्हारा', 'tumhari': 'तुम्हारी', 'tumhare': 'तुम्हारे',
+    'tum': 'तुम', 'tumko': 'तुमको', 'tujhe': 'तुझे', 'tera': 'तेरा', 'teri': 'तेरी',
+    'mere': 'मेरे', 'mera': 'मेरा', 'meri': 'मेरी', 'mujhe': 'मुझे', 'mujhko': 'मुझको',
+    'main': 'मैं', 'mai': 'मैं', 'hum': 'हम', 'humara': 'हमारा', 'humari': 'हमारी',
+    'aap': 'आप', 'aapka': 'आपका', 'aapki': 'आपकी', 'apna': 'अपना', 'apni': 'अपनी',
+    'apne': 'अपने', 'yeh': 'यह', 'ye': 'ये', 'woh': 'वो', 'wo': 'वो', 'iska': 'इसका',
+    'uska': 'उसका', 'uski': 'उसकी', 'inka': 'इनका', 'unka': 'उनका',
+    // common verbs
+    'hai': 'है', 'hain': 'हैं', 'ho': 'हो', 'hoga': 'होगा', 'hogi': 'होगी', 'hua': 'हुआ',
+    'hui': 'हुई', 'hue': 'हुए', 'kya': 'क्या', 'kar': 'कर', 'karo': 'करो', 'karna': 'करना',
+    'karti': 'करती', 'karta': 'करता', 'karte': 'करते', 'karunga': 'करूंगा',
+    'tha': 'था', 'thi': 'थी', 'the': 'थे', 'jaa': 'जा', 'jao': 'जाओ', 'jana': 'जाना',
+    'aata': 'आता', 'aati': 'आती', 'aana': 'आना', 'aao': 'आओ', 'raha': 'रहा',
+    'rahi': 'रही', 'rahe': 'रहे', 'sakta': 'सकता', 'sakti': 'सकती', 'sakte': 'सकते',
+    'chahiye': 'चाहिए', 'chahta': 'चाहता', 'chahti': 'चाहती', 'lagta': 'लगता',
+    'lagti': 'लगती', 'lagta': 'लगता', 'milta': 'मिलता', 'milti': 'मिलती',
+    'bolna': 'बोलना', 'bolo': 'बोलो', 'bola': 'बोला', 'suno': 'सुनो', 'sunao': 'सुनाओ',
+    'sun': 'सुन', 'suna': 'सुना', 'dekh': 'देख', 'dekho': 'देखो', 'dekha': 'देखा',
+    'padho': 'पढ़ो', 'padh': 'पढ़', 'padha': 'पढ़ा', 'padhna': 'पढ़ना',
+    'likho': 'लिखो', 'likh': 'लिख', 'likha': 'लिखा', 'likhna': 'लिखना',
+    'batao': 'बताओ', 'bata': 'बता', 'bataya': 'बताया', 'batana': 'बताना',
+    'bhejo': 'भेजो', 'bheja': 'भेजा', 'bhejna': 'भेजना',
+    'poocho': 'पूछो', 'poocha': 'पूछा', 'poochna': 'पूछना', 'pucho': 'पूछो',
+    'samajh': 'समझ', 'samjha': 'समझा', 'samjho': 'समझो', 'pata': 'पता', 'jaanta': 'जानता',
+    'jaanti': 'जानती', 'yaad': 'याद', 'bhool': 'भूल', 'soch': 'सोच', 'socha': 'सोचा',
+    // nouns / everyday
+    'din': 'दिन', 'raat': 'रात', 'subah': 'सुबह', 'shaam': 'शाम', 'waqt': 'वक़्त',
+    'time': 'टाइम', 'baat': 'बात', 'baatein': 'बातें', 'dil': 'दिल', 'pyaar': 'प्यार',
+    'pyar': 'प्यार', 'mohabbat': 'मोहब्बत', 'ishq': 'इश्क़', 'dosti': 'दोस्ती',
+    'yaar': 'यार', 'dost': 'दोस्त', 'jaan': 'जान', 'jaanu': 'जानू', 'babu': 'बाबू',
+    'ghar': 'घर', 'kaam': 'काम', 'khana': 'खाना', 'paani': 'पानी', 'chai': 'चाय',
+    'accha': 'अच्छा', 'acha': 'अच्छा', 'achhi': 'अच्छी', 'bura': 'बुरा',
+    'bahut': 'बहुत', 'bohot': 'बहुत', 'thoda': 'थोड़ा', 'thodi': 'थोड़ी',
+    'zyada': 'ज़्यादा', 'jyada': 'ज़्यादा', 'sab': 'सब', 'kuch': 'कुछ', 'koi': 'कोई',
+    'abhi': 'अभी', 'phir': 'फिर', 'fir': 'फिर', 'kal': 'कल', 'aaj': 'आज',
+    'hamesha': 'हमेशा', 'kabhi': 'कभी', 'dobara': 'दोबारा', 'jaldi': 'जल्दी',
+    'dheere': 'धीरे', 'halke': 'हल्के', 'halka': 'हल्का', 'sach': 'सच', 'jhooth': 'झूठ',
+    'khush': 'खुश', 'dukhi': 'दुखी', 'pareshan': 'परेशान', 'sharm': 'शर्म',
+    'na': 'ना', 'nahi': 'नहीं', 'nahin': 'नहीं', 'haan': 'हाँ', 'han': 'हाँ', 'ha': 'हाँ',
+    'bas': 'बस', 'bhi': 'भी', 'toh': 'तो', 'to': 'तो', 'hi': 'ही', 'sirf': 'सिर्फ़',
+    'aur': 'और', 'ya': 'या', 'par': 'पर', 'se': 'से', 'me': 'में', 'mein': 'में',
+    'ka': 'का', 'ki': 'की', 'ke': 'के', 'ko': 'को', 'jo': 'जो',
+    // song / poetry vocabulary
+    'hawa': 'हवा', 'chalti': 'चलती', 'chahat': 'चाहत', 'chahtein': 'चाहतें',
+    'badhti': 'बढ़ती', 'sapna': 'सपना', 'sapne': 'सपने', 'duniya': 'दुनिया',
+    'zindagi': 'ज़िंदगी', 'jindagi': 'ज़िंदगी', 'aankhein': 'आँखें', 'ankhein': 'आँखें',
+    'aankh': 'आँख', 'chehra': 'चेहरा', 'saath': 'साथ', 'paas': 'पास', 'dur': 'दूर',
+    'door': 'दूर', 'paas': 'पास', 'Tum': 'तुम'
+};
+
+// Words that are Latin in writing but Hindi in speech, where the letters alone
+// would mislead Polly into an English reading.
+const HINGLISH_PRONUNCIATION = {
+    'Priya': 'प्रिया', 'Rocky': 'रॉकी', 'Sneha': 'स्नेहा'
+};
+
+const HINGLISH_WORD_RE = new RegExp(
+    `\\b(${Object.keys(HINGLISH_WORDS)
+        .sort((a, b) => b.length - a.length)
+        .join('|')})\\b`,
+    'gi'
+);
+
+/**
+ * Rewrite Romanised Hinglish as Devanagari, leaving English words untouched.
+ *
+ * Word-level (never mid-word) so "hai" inside "chair" is safe, and case is
+ * ignored so a sentence-initial "Tum" still matches.
+ *
+ * Only used on the way to the speech engine. The transcript keeps Hinglish.
+ */
+function toHindiScript(text) {
+    return String(text ?? '')
+        .replace(HINGLISH_WORD_RE, (word) => {
+            const lower = word.toLowerCase();
+            // Preserve the original casing of the first letter is pointless in
+            // Devanagari; the word list is what decides.
+            return HINGLISH_WORDS[lower] ?? HINGLISH_WORDS[word] ?? word;
+        })
+        .replace(/\b(Priya|Rocky|Sneha)\b/g, (word) => HINGLISH_PRONUNCIATION[word] ?? word);
+}
+
 function escapeXml(value) {
     return value
         .replace(/&/g, '&amp;')
@@ -1876,15 +1952,92 @@ function escapeXml(value) {
 }
 
 /**
- * Wrap a reply in SSML so Polly can vary pace and pitch. Sentence ends get a
- * short break, which is what makes the speech stop sounding like one long run-on.
+ * Split a reply into prose and quoted verse.
+ *
+ * Quoted spans are song lyrics, shayari, dohe — they need different timing from
+ * the sentence around them, so they are kept as their own segments instead of
+ * being squashed into one run-on block.
+ */
+function splitProseAndVerse(text) {
+    const out = [];
+    const pattern = /"([^"]+)"/g;
+    let cursor = 0;
+    let match;
+
+    while ((match = pattern.exec(text)) !== null) {
+        if (match.index > cursor) {
+            out.push({ verse: false, text: text.slice(cursor, match.index) });
+        }
+        out.push({ verse: true, text: match[1] });
+        cursor = pattern.lastIndex;
+    }
+
+    if (cursor < text.length) out.push({ verse: false, text: text.slice(cursor) });
+
+    // Merge quoted lines that sit next to each other (only whitespace or a line
+    // break between them) into one verse block. Otherwise each quote is its own
+    // stanza and every line gets a stanza pause instead of a breath — which is
+    // exactly what a song must not do.
+    const merged = [];
+    for (const part of out) {
+        const previous = merged[merged.length - 1];
+
+        if (part.verse && previous?.verse) {
+            previous.text += `\n${part.text}`;
+            continue;
+        }
+        if (!part.text.trim()) continue;
+        merged.push({ ...part });
+    }
+
+    return merged;
+}
+
+/**
+ * Turn a verse block into one SSML phrase per line.
+ *
+ * Line breaks inside the quote are the song's own structure, so they are honoured
+ * exactly: each line gets its own tempo, a comma gets a small lift, and the end of
+ * a line gets a breath. This is the part that makes a lyric sound sung rather
+ * than read out as a paragraph.
+ */
+function buildVersePhrase(verseText) {
+    const lines = String(verseText)
+        .split(/\n+/)
+        .map((line) => line.trim())
+        .filter(Boolean);
+
+    const phrase = lines.map((line) => {
+        const body = escapeXml(toHindiScript(line)).replace(
+            /,\s*/g,
+            `,<break time="${SONG_PROSODY.commaBreak}"/>`
+        );
+        return `<prosody rate="${SONG_PROSODY.rate}" pitch="${SONG_PROSODY.pitch}">${body}</prosody>`;
+    }).join(`<break time="${SONG_PROSODY.lineBreak}"/>`);
+
+    return `${phrase}<break time="${SONG_PROSODY.stanzaBreak}"/>`;
+}
+
+/**
+ * Wrap a reply in SSML so Polly can vary pace and pitch.
+ *
+ * Sentence ends get a short break, which is what stops speech sounding like one
+ * long run-on. Quoted verse gets song timing instead (see buildVersePhrase), and
+ * Hindi words are transliterated so the bilingual voice reads them in Hindi.
  */
 function buildSsml(text, tone) {
     const prosody = TONE_PROSODY[tone] ?? TONE_PROSODY.neutral;
-    const body = escapeXml(text)
-        .split(/(?<=[.!?\u0964])\s+/)
-        .filter(Boolean)
-        .join(`<break time="${prosody.break}"/>`);
+
+    const body = splitProseAndVerse(String(text))
+        .map((part) => {
+            if (part.verse) return buildVersePhrase(part.text);
+
+            return escapeXml(toHindiScript(part.text))
+                .split(/(?<=[.!?\u0964])\s+/)
+                .filter(Boolean)
+                .join(`<break time="${prosody.break}"/>`);
+        })
+        .join('');
 
     return [
         '<speak>',
