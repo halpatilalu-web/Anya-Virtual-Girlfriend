@@ -30,47 +30,13 @@ const CHAT_MODEL = 'gpt-5.4-nano';
 // change to the upstream default cannot silently raise what users are charged.
 const TEST_MODE = false;
 
-// FREE image route. Pollinations' Classic API is documented as "Free, no
-// signup, rate-limited" — no account, no key, no card. That makes it the default
-// so nobody pays to use this app.
+// The Puter image model — the one that was in place before the expensive detour.
 //
-// The trade-offs are real and are surfaced in the UI, not hidden:
-//   - One image at a time, at least 45 seconds apart, per IP address.
-//   - Every image carries a small Pollinations logo in the corner.
-//   - One model, max 768x768, and no input-image support — so the locked face
-//     cannot be used here. A reference photo only works on the Puter route.
-//   - "Best effort": no uptime guarantee.
-const freeImageUrl = (prompt, seed) => {
-    const params = new URLSearchParams({
-        width: String(IMAGE_OPTIONS.width ?? 768),
-        height: String(IMAGE_OPTIONS.height ?? 768),
-        seed: String(seed),
-        model: 'flux',
-        // Ask anyway; the service is documented to keep its logo on free tier.
-        nologo: 'true',
-        // Never publish a private photo of her to the public feed.
-        private: 'true',
-        safe: 'true',
-        referrer: 'priya-girlfriend'
-    });
-
-    return `https://image.pollinations.ai/prompt/${encodeURIComponent(prompt)}?${params}`;
-};
-
-// Seconds to wait before the free slot opens again. The API answers 402 with a
-// Retry-After header; 45 s is the documented minimum gap.
-const FREE_IMAGE_COOLDOWN_MS = 45000;
-// How long to wait for the free endpoint before giving up on it. Generation
-// itself takes ~20 s, so this is not a short fuse.
-const FREE_IMAGE_TIMEOUT_MS = 90000;
-
-// Puter's cheap route. The expensive model was removed on purpose: it cost ~7x
-// more and one accidental selection was real money. There is no paid model
-// selector any more — nothing in the UI can move this to an expensive model.
-//
-// `gpt-image-2` at quality 'low' is the cheapest measured option (~$0.0059), and
-// it is also the only route here that accepts a reference photo, so the face lock
-// depends on it. Pinned explicitly so an upstream default cannot raise the price.
+// `gpt-image-2` at quality 'low' is the cheapest measured option (~$0.0059) and
+// it accepts a reference photo, so the face lock works on it too. Pinned
+// explicitly so an upstream default change cannot raise the price. There is no
+// other provider in this file and no model selector in the UI, so nothing can
+// move this to something expensive.
 const IMAGE_OPTIONS = {
     provider: 'openai',
     model: 'gpt-image-2',
@@ -282,10 +248,17 @@ const SONG_PROSODY = {
 };
 
 // How each detected tone is spoken.
+//
+// `break` is now short on purpose. It used to be 180-350 ms after *every*
+// sentence, which is what made her sound like she was reading separate sentences
+// aloud instead of talking. Natural speech keeps a sentence break near 150 ms and
+// puts the real length in commas and ellipses.
+//
+// `pause` is what an ellipsis ("...") becomes: a hesitation, spoken as silence.
 const TONE_PROSODY = {
-    tender: { rate: '92%', pitch: '-2%', break: '350ms' },
-    excited: { rate: '108%', pitch: '+3%', break: '180ms' },
-    neutral: { rate: '100%', pitch: '0%', break: '250ms' }
+    tender: { rate: '92%', pitch: '-2%', break: '160ms', pause: '620ms' },
+    excited: { rate: '108%', pitch: '+3%', break: '130ms', pause: '380ms' },
+    neutral: { rate: '98%', pitch: '0%', break: '150ms', pause: '520ms' }
 };
 
 // Reactions he can leave on a reply. She notices them.
@@ -363,9 +336,6 @@ let voiceEnabled = true;
 // Puter call exists solely as a fallback for when free is unavailable, and it is
 // pinned to the cheapest model so it can never quietly cost real money.
 
-// Last time the free endpoint produced an image. The free tier allows roughly
-// one image per 45 s per IP, so this is what stops us hammering a 402.
-let freeImageLastUsed = 0;
 
 let memory = loadMemory();
 // Captured before lastSeen is touched, so the greeting can react to the gap.
@@ -1261,13 +1231,20 @@ async function synthesiseSpeech(text, tone) {
     // Plain text is the same provider without the part that gets rejected. The
     // transliteration stays, because that is what fixes the pronunciation.
     attempts.push({
-        spoken: toHindiScript(String(text).slice(0, VOICE_NOTE_MAX_CHARS)),
+        // No SSML here, so the pause markers have to go as plain punctuation —
+        // but the ellipses still must not be read out.
+        spoken: toHindiScript(
+            normaliseForSpeech(String(text).slice(0, VOICE_NOTE_MAX_CHARS))
+                .replace(/\s*PAUSE\s*/g, ', ')
+                .replace(/,PAUSE,/g, ',')
+        ),
         options: { ...VOICE_OPTIONS }
     });
 
     // Different provider: survives a Polly outage, loses the en-IN accent.
     attempts.push({
-        spoken: String(text).slice(0, VOICE_NOTE_MAX_CHARS),
+        spoken: normaliseForSpeech(String(text).slice(0, VOICE_NOTE_MAX_CHARS))
+            .replace(/\s*PAUSE\s*/g, ', '),
         options: {
             ...FALLBACK_VOICE_OPTIONS,
             instructions: [
@@ -1529,117 +1506,24 @@ async function sendImage(message) {
     appendImage(generated, photoMode);
 }
 
-/** The free Pollinations endpoint has no image-to-image, so a lock forces Puter. */
+/**
+ * Whether the locked face can be attached to this request.
+ *
+ * There is only one image provider now (Puter), and its model accepts a reference
+ * image, so a locked face is always usable.
+ */
 function usesReferenceImage() {
     return Boolean(memory.identityImage);
 }
 
 /**
- * Fetch one image from the free Pollinations endpoint.
+ * One generation through Puter, with a single fallback.
  *
- * Returns an <img> element rather than a URL because that is what the rest of
- * the render path expects, and because the browser keeps the bytes once loaded —
- * which is how the save link works without downloading them ourselves.
- *
- * Rejects on a 402 rate-limit, a timeout, or a broken/placeholder response.
- */
-/** The free route is a plain network image, so tests stub it instead of waiting. */
-function freeImageStub() {
-    return typeof window.__PRIYA_FREE_IMAGE__ === 'function' ? window.__PRIYA_FREE_IMAGE__ : null;
-}
-
-/**
- * True when the free route can actually be used right now:
- * chosen, no locked face (it has no image-to-image), and reachable — which in
- * test mode means "stubbed", because jsdom has no network stack.
- */
-function freeRouteUsable() {
-    // The free endpoint cannot take a reference photo, so a locked face has to go
-    // through Puter.
-    if (memory.identityImage) return false;
-    if (window.__PRIYA_TEST__) return Boolean(freeImageStub());
-    return true;
-}
-
-function generateFreeImage(prompt) {
-    const stub = freeImageStub();
-    if (stub) {
-        // Stub gets the prompt and the real URL, so tests can assert on both.
-        return Promise.resolve(stub(prompt, freeImageUrl(prompt, 1)));
-    }
-
-    return new Promise((resolve, reject) => {
-        const seed = Math.floor(Math.random() * 1_000_000);
-        const img = document.createElement('img');
-
-        const timer = setTimeout(() => {
-            cleanup();
-            reject(Object.assign(new Error('Free image timed out'), { code: 'TimeoutError' }));
-        }, FREE_IMAGE_TIMEOUT_MS);
-
-        function cleanup() {
-            clearTimeout(timer);
-            img.onload = null;
-            img.onerror = null;
-        }
-
-        img.onload = () => {
-            cleanup();
-            // The endpoint serves an error *card* with a 200 in some cases; a real
-            // generation is never tiny.
-            if (!img.naturalWidth) {
-                reject(Object.assign(new Error('Empty free image'), { code: 'bad_request' }));
-                return;
-            }
-            resolve(img);
-        };
-
-        img.onerror = () => {
-            cleanup();
-            reject(
-                Object.assign(new Error('Free image failed'), {
-                    code: 'free_unavailable'
-                })
-            );
-        };
-
-        img.crossOrigin = 'anonymous';
-        img.src = freeImageUrl(prompt, seed);
-    });
-}
-
-/**
- * Turn one prompt into an image, cheapest working route first.
- *
- * 1. Free Pollinations route, unless a reference photo is locked (it has no
- *    image-to-image support) or free is blocked by its own cooldown.
- * 2. The configured paid Puter model, when the user chose paid or has a lock.
- * 3. The cheap generic Puter route, as a last resort.
- *
- * A `bad_request` in step 2/3 usually means the model or tier was rejected, not
- * the prompt — retrying on the generic route is worth one attempt.
+ * A `bad_request` here usually means the model or tier was rejected, not that the
+ * prompt was, so the same prompt gets one retry on the generic options before an
+ * error reaches the user.
  */
 async function generateImage(prompt, options = IMAGE_OPTIONS) {
-    const wantFree = freeRouteUsable();
-
-    if (wantFree) {
-        const waitMs = freeImageWaitMs();
-        if (waitMs <= 0) {
-            try {
-                freeImageLastUsed = Date.now();
-                return await generateFreeImage(prompt);
-            } catch (error) {
-                console.error('[Priya] free image route failed', error);
-                // Fall through to the paid route rather than showing an error.
-            }
-        } else if (typeof puter === 'undefined' || !puter.ai?.txt2img) {
-            throw Object.assign(new Error('Free slot not ready'), {
-                code: 'free_cooldown',
-                retryAfterMs: waitMs
-            });
-        }
-    }
-
     if (typeof puter === 'undefined' || !puter.ai?.txt2img) {
         throw Object.assign(new Error('No image provider available'), { code: 'sdk_missing' });
     }
@@ -1658,19 +1542,6 @@ async function generateImage(prompt, options = IMAGE_OPTIONS) {
     }
 }
 
-/**
- * Explain a free-tier refusal in terms of seconds, not error codes.
- */
-function freeSlotNotice() {
-    const waitMs = Math.max(freeImageWaitMs(), FREE_IMAGE_COOLDOWN_MS);
-    return `Free photo service ek baar me ek photo deti hai — ${Math.ceil(waitMs / 1000)} second ruk ke phir try karo.`;
-}
-
-/** Milliseconds until the next free slot, or 0 when one is available now. */
-function freeImageWaitMs() {
-    if (!freeImageLastUsed) return 0;
-    return Math.max(0, freeImageLastUsed + FREE_IMAGE_COOLDOWN_MS - Date.now());
-}
 
 function appendImage(generated, mode = 'normal', captionText = null) {
     const row = document.createElement('div');
@@ -1795,10 +1666,6 @@ function reportError(error, source = 'chat') {
         text = 'Tumhara AI credit khatam ho gaya hai. Puter dashboard me usage check karo, phir try karna.';
     } else if (/too_many_requests|429/.test(haystack)) {
         text = 'Thoda dheere jaan — ek-do second ruk ke phir bhejo.';
-    } else if (code === 'free_cooldown') {
-        text = freeSlotNotice();
-    } else if (code === 'free_unavailable') {
-        text = 'Free photo service ne abhi jawab nahi diya. Thoda ruk ke phir try karo.';
     } else if (/prompt_required|bad_request|400/.test(haystack)) {
         text = 'Yeh message samajh nahi aaya. Thoda alag tarike se likh ke bhejo.';
     } else {
@@ -1847,6 +1714,62 @@ function detectTone(text) {
 }
 
 // ---------------------------------------------------------------------------
+// Speech normalisation
+// ---------------------------------------------------------------------------
+//
+// Two problems reported from listening to real replies:
+//
+//  1. "...." was read out — literally "dot dot dot dot". Ellipses in chat mean a
+//     pause, so they must become a pause, not four words.
+//  2. Symbols and emoji were either spelled out or made the voice stall.
+
+/**
+ * Replace anything that would be spoken literally with what it actually means.
+ *
+ * Runs BEFORE escaping, because the output contains SSML tags.
+ *
+ * - Ellipses (3+ dots, or the Unicode character) -> a pause marker.
+ * - Leftover double dots -> the same pause.
+ * - Emoji, dingbats, arrows -> dropped; the engine spells or chokes on them.
+ * - Repeated punctuation collapsed, so "!!!" is one emphasis, not three.
+ */
+function normaliseForSpeech(text) {
+    return String(text ?? '')
+        .replace(/(?:\u2026|\.{2,})/g, ' ,PAUSE, ')
+        .replace(/[\u{1F000}-\u{1FAFF}\u{2600}-\u{27BF}\u{FE00}-\u{FE0F}\u{2B00}-\u{2BFF}]/gu, '')
+        .replace(/[\u2190-\u21FF\u2900-\u297F]/g, '')
+        .replace(/([!?])\1{1,}/g, '$1')
+        .replace(/(?:\s*,?PAUSE,?\s*){2,}/g, ' ,PAUSE, ')
+        .replace(/([,.!?])\s*,PAUSE,\s*([,.!?])/g, '$1 $2')
+        .replace(/[ \t]{2,}/g, ' ')
+        .trim();
+}
+
+/** The silence an ellipsis turns into, at the tone's own length. */
+function pauseBreak(tone) {
+    const prosody = TONE_PROSODY[tone] ?? TONE_PROSODY.neutral;
+    return `<break time="${prosody.pause}"/>`;
+}
+
+/**
+ * Turn normalised text into SSML body text.
+ *
+ * Pause markers become real breaks. This is why a reply with "..." now hesitates
+ * instead of saying "dot dot dot".
+ */
+function speakableBody(text, tone) {
+    const chunks = String(text).split(',PAUSE,');
+
+    return chunks
+        .map((chunk, index) => {
+            const body = escapeXml(toHindiScript(chunk.trim()));
+            const pause = index < chunks.length - 1 ? pauseBreak(tone) : '';
+            return body ? body + pause : pause;
+        })
+        .join('');
+}
+
+// ---------------------------------------------------------------------------
 // Hinglish -> Devanagari (speech only)
 // ---------------------------------------------------------------------------
 //
@@ -1861,59 +1784,89 @@ function detectTone(text) {
 // Longest first inside each group, because the matcher is greedy on the longest
 // candidate. Covers the patterns Hinglish actually uses, not all of Hindi.
 const HINGLISH_WORDS = {
-    // pronouns / grammar
+    // pronouns and possessives
     'tumhe': 'तुम्हें', 'tumhara': 'तुम्हारा', 'tumhari': 'तुम्हारी', 'tumhare': 'तुम्हारे',
-    'tum': 'तुम', 'tumko': 'तुमको', 'tujhe': 'तुझे', 'tera': 'तेरा', 'teri': 'तेरी',
-    'mere': 'मेरे', 'mera': 'मेरा', 'meri': 'मेरी', 'mujhe': 'मुझे', 'mujhko': 'मुझको',
-    'main': 'मैं', 'mai': 'मैं', 'hum': 'हम', 'humara': 'हमारा', 'humari': 'हमारी',
-    'aap': 'आप', 'aapka': 'आपका', 'aapki': 'आपकी', 'apna': 'अपना', 'apni': 'अपनी',
-    'apne': 'अपने', 'yeh': 'यह', 'ye': 'ये', 'woh': 'वो', 'wo': 'वो', 'iska': 'इसका',
-    'uska': 'उसका', 'uski': 'उसकी', 'inka': 'इनका', 'unka': 'उनका',
-    // common verbs
-    'hai': 'है', 'hain': 'हैं', 'ho': 'हो', 'hoga': 'होगा', 'hogi': 'होगी', 'hua': 'हुआ',
-    'hui': 'हुई', 'hue': 'हुए', 'kya': 'क्या', 'kar': 'कर', 'karo': 'करो', 'karna': 'करना',
-    'karti': 'करती', 'karta': 'करता', 'karte': 'करते', 'karunga': 'करूंगा',
-    'tha': 'था', 'thi': 'थी', 'the': 'थे', 'jaa': 'जा', 'jao': 'जाओ', 'jana': 'जाना',
-    'aata': 'आता', 'aati': 'आती', 'aana': 'आना', 'aao': 'आओ', 'raha': 'रहा',
-    'rahi': 'रही', 'rahe': 'रहे', 'sakta': 'सकता', 'sakti': 'सकती', 'sakte': 'सकते',
-    'chahiye': 'चाहिए', 'chahta': 'चाहता', 'chahti': 'चाहती', 'lagta': 'लगता',
-    'lagti': 'लगती', 'lagta': 'लगता', 'milta': 'मिलता', 'milti': 'मिलती',
-    'bolna': 'बोलना', 'bolo': 'बोलो', 'bola': 'बोला', 'suno': 'सुनो', 'sunao': 'सुनाओ',
-    'sun': 'सुन', 'suna': 'सुना', 'dekh': 'देख', 'dekho': 'देखो', 'dekha': 'देखा',
+    'tum': 'तुम', 'tumko': 'तुमको', 'tumse': 'तुमसे', 'tujhe': 'तुझे',
+    'tera': 'तेरा', 'teri': 'तेरी', 'tere': 'तेरे',
+    'mera': 'मेरा', 'meri': 'मेरी', 'mere': 'मेरे', 'mujhe': 'मुझे', 'mujhko': 'मुझको',
+    'mujhse': 'मुझसे', 'main': 'मैं', 'mai': 'मैं', 'maine': 'मैंने',
+    'hum': 'हम', 'humara': 'हमारा', 'humari': 'हमारी', 'humse': 'हमसे', 'humne': 'हमने',
+    'aap': 'आप', 'aapka': 'आपका', 'aapki': 'आपकी', 'aapne': 'आपने',
+    'apna': 'अपना', 'apni': 'अपनी', 'apne': 'अपने',
+    'yeh': 'यह', 'ye': 'ये', 'woh': 'वो', 'wo': 'वो', 'usne': 'उसने', 'tumne': 'तुमने',
+    'iska': 'इसका', 'uska': 'उसका', 'uski': 'उसकी', 'unka': 'उनका',
+
+    // be / have / do — the words that made her sound robotic when read as English
+    'hai': 'है', 'hain': 'हैं', 'ho': 'हो', 'hu': 'हूँ', 'hoo': 'हूँ', 'hoon': 'हूँ',
+    'hoga': 'होगा', 'hogi': 'होगी', 'honge': 'होंगे', 'hua': 'हुआ', 'hui': 'हुई', 'hue': 'हुए',
+    'tha': 'था', 'thi': 'थी', 'the': 'थे', 'hota': 'होता', 'hoti': 'होती', 'hote': 'होते',
+
+    // verbs
+    'kya': 'क्या', 'kar': 'कर', 'karo': 'करो', 'karna': 'करना', 'karne': 'करने', 'karke': 'करके',
+    'karta': 'करता', 'karti': 'करती', 'karte': 'करते', 'karenge': 'करेंगे', 'karega': 'करेगा',
+    'karegi': 'करेगी', 'karunga': 'करूंगा', 'karungi': 'करूंगी',
+    'jaa': 'जा', 'jao': 'जाओ', 'jana': 'जाना', 'jata': 'जाता', 'jati': 'जाती',
+    'aata': 'आता', 'aati': 'आती', 'aana': 'आना', 'aao': 'आओ',
+    'raha': 'रहा', 'rahi': 'रही', 'rahe': 'रहे', 'raho': 'रहो', 'rahna': 'रहना', 'rehna': 'रहना',
+    'rehta': 'रहता', 'sakta': 'सकता', 'sakti': 'सकती', 'sakte': 'सकते',
+    'chahiye': 'चाहिए', 'chahta': 'चाहता', 'chahti': 'चाहती',
+    'lagta': 'लगता', 'lagti': 'लगती', 'laga': 'लगा', 'lagi': 'लगी',
+    'milta': 'मिलता', 'milti': 'मिलती', 'milte': 'मिलते', 'milna': 'मिलना', 'mila': 'मिला',
+    'mili': 'मिली', 'milenge': 'मिलेंगे',
+    'bolna': 'बोलना', 'bolo': 'बोलो', 'bola': 'बोला', 'boli': 'बोली',
+    'suno': 'सुनो', 'sunao': 'सुनाओ', 'suna': 'सुना', 'sun': 'सुन',
+    'dekho': 'देखो', 'dekh': 'देख', 'dekha': 'देखा', 'dekhna': 'देखना', 'dekhi': 'देखी',
+    'soch': 'सोच', 'socho': 'सोचो', 'socha': 'सोचा', 'sochna': 'सोचना',
+    'samajh': 'समझ', 'samjho': 'समझो', 'samjha': 'समझा', 'samjhao': 'समझाओ',
     'padho': 'पढ़ो', 'padh': 'पढ़', 'padha': 'पढ़ा', 'padhna': 'पढ़ना',
     'likho': 'लिखो', 'likh': 'लिख', 'likha': 'लिखा', 'likhna': 'लिखना',
     'batao': 'बताओ', 'bata': 'बता', 'bataya': 'बताया', 'batana': 'बताना',
     'bhejo': 'भेजो', 'bheja': 'भेजा', 'bhejna': 'भेजना',
     'poocho': 'पूछो', 'poocha': 'पूछा', 'poochna': 'पूछना', 'pucho': 'पूछो',
-    'samajh': 'समझ', 'samjha': 'समझा', 'samjho': 'समझो', 'pata': 'पता', 'jaanta': 'जानता',
-    'jaanti': 'जानती', 'yaad': 'याद', 'bhool': 'भूल', 'soch': 'सोच', 'socha': 'सोचा',
-    // nouns / everyday
+    'chalo': 'चलो', 'chal': 'चल', 'chalna': 'चलना', 'chalti': 'चलती', 'chalti': 'चलती',
+    'gaya': 'गया', 'gayi': 'गई', 'gaye': 'गए', 'aaya': 'आया', 'aayi': 'आई', 'aaye': 'आए',
+    'diya': 'दिया', 'liya': 'लिया', 'liye': 'लिए',
+
+    // time
     'din': 'दिन', 'raat': 'रात', 'subah': 'सुबह', 'shaam': 'शाम', 'waqt': 'वक़्त',
-    'time': 'टाइम', 'baat': 'बात', 'baatein': 'बातें', 'dil': 'दिल', 'pyaar': 'प्यार',
-    'pyar': 'प्यार', 'mohabbat': 'मोहब्बत', 'ishq': 'इश्क़', 'dosti': 'दोस्ती',
-    'yaar': 'यार', 'dost': 'दोस्त', 'jaan': 'जान', 'jaanu': 'जानू', 'babu': 'बाबू',
-    'ghar': 'घर', 'kaam': 'काम', 'khana': 'खाना', 'paani': 'पानी', 'chai': 'चाय',
+    'abhi': 'अभी', 'phir': 'फिर', 'fir': 'फिर', 'kal': 'कल', 'aaj': 'आज', 'ab': 'अब',
+    'tab': 'तब', 'jab': 'जब', 'tak': 'तक', 'hamesha': 'हमेशा', 'kabhi': 'कभी',
+    'dobara': 'दोबारा', 'jaldi': 'जल्दी', 'dheere': 'धीरे',
+    'kab': 'कब', 'kahan': 'कहाँ', 'kyun': 'क्यों', 'kyu': 'क्यों', 'kaun': 'कौन',
+    'kaise': 'कैसे', 'kaisi': 'कैसी', 'kaisa': 'कैसा',
+    'kitna': 'कितना', 'kitni': 'कितनी', 'kitne': 'कितने',
+
+    // feelings and everyday nouns
+    'dil': 'दिल', 'pyaar': 'प्यार', 'pyar': 'प्यार', 'mohabbat': 'मोहब्बत', 'ishq': 'इश्क़',
+    'dosti': 'दोस्ती', 'yaar': 'यार', 'dost': 'दोस्त', 'jaan': 'जान', 'jaanu': 'जानू',
+    'babu': 'बाबू', 'ghar': 'घर', 'kaam': 'काम', 'khana': 'खाना', 'paani': 'पानी',
+    'chai': 'चाय', 'baat': 'बात', 'baatein': 'बातें', 'yaad': 'याद', 'bhool': 'भूल',
     'accha': 'अच्छा', 'acha': 'अच्छा', 'achhi': 'अच्छी', 'bura': 'बुरा',
     'bahut': 'बहुत', 'bohot': 'बहुत', 'thoda': 'थोड़ा', 'thodi': 'थोड़ी',
     'zyada': 'ज़्यादा', 'jyada': 'ज़्यादा', 'sab': 'सब', 'kuch': 'कुछ', 'koi': 'कोई',
-    'abhi': 'अभी', 'phir': 'फिर', 'fir': 'फिर', 'kal': 'कल', 'aaj': 'आज',
-    'hamesha': 'हमेशा', 'kabhi': 'कभी', 'dobara': 'दोबारा', 'jaldi': 'जल्दी',
-    'dheere': 'धीरे', 'halke': 'हल्के', 'halka': 'हल्का', 'sach': 'सच', 'jhooth': 'झूठ',
-    'khush': 'खुश', 'dukhi': 'दुखी', 'pareshan': 'परेशान', 'sharm': 'शर्म',
+    'sach': 'सच', 'jhooth': 'झूठ', 'khush': 'खुश', 'dukhi': 'दुखी',
+    'pareshan': 'परेशान', 'sharm': 'शर्म', 'pata': 'पता', 'jaanta': 'जानता', 'jaanti': 'जानती',
+
+    // particles — tiny, extremely frequent, and pure English-looking Latin
+    // singing verbs — she sings often enough that these matter
+    'gaa': 'गा', 'gana': 'गाना', 'ganaa': 'गाना', 'gaana': 'गाना', 'gaate': 'गाते',
+    'gaata': 'गाता', 'gaati': 'गाती', 'gungunana': 'गुनगुनाना', 'gaaun': 'गाऊँ',
+
     'na': 'ना', 'nahi': 'नहीं', 'nahin': 'नहीं', 'haan': 'हाँ', 'han': 'हाँ', 'ha': 'हाँ',
     'bas': 'बस', 'bhi': 'भी', 'toh': 'तो', 'to': 'तो', 'hi': 'ही', 'sirf': 'सिर्फ़',
     'aur': 'और', 'ya': 'या', 'par': 'पर', 'se': 'से', 'me': 'में', 'mein': 'में',
-    'ka': 'का', 'ki': 'की', 'ke': 'के', 'ko': 'को', 'jo': 'जो',
-    // song / poetry vocabulary
-    'hawa': 'हवा', 'chalti': 'चलती', 'chahat': 'चाहत', 'chahtein': 'चाहतें',
-    'badhti': 'बढ़ती', 'sapna': 'सपना', 'sapne': 'सपने', 'duniya': 'दुनिया',
-    'zindagi': 'ज़िंदगी', 'jindagi': 'ज़िंदगी', 'aankhein': 'आँखें', 'ankhein': 'आँखें',
-    'aankh': 'आँख', 'chehra': 'चेहरा', 'saath': 'साथ', 'paas': 'पास', 'dur': 'दूर',
-    'door': 'दूर', 'paas': 'पास', 'Tum': 'तुम'
+    'ka': 'का', 'ki': 'की', 'ke': 'के', 'ko': 'को', 'jo': 'जो', 'aa': 'आ', 'ja': 'जा',
+
+    // song and poetry vocabulary
+    'hawa': 'हवा', 'chahat': 'चाहत', 'chahtein': 'चाहतें', 'badhti': 'बढ़ती',
+    'sapna': 'सपना', 'sapne': 'सपने', 'duniya': 'दुनिया', 'zindagi': 'ज़िंदगी',
+    'jindagi': 'ज़िंदगी', 'aankhein': 'आँखें', 'ankhein': 'आँखें', 'aankh': 'आँख',
+    'chehra': 'चेहरा', 'saath': 'साथ', 'paas': 'पास', 'dur': 'दूर', 'door': 'दूर',
+    'halke': 'हल्के', 'halka': 'हल्का', 'halki': 'हल्की'
 };
 
 // Words that are Latin in writing but Hindi in speech, where the letters alone
-// would mislead Polly into an English reading.
+// would mislead the engine into an English reading.
 const HINGLISH_PRONUNCIATION = {
     'Priya': 'प्रिया', 'Rocky': 'रॉकी', 'Sneha': 'स्नेहा'
 };
@@ -1925,22 +1878,85 @@ const HINGLISH_WORD_RE = new RegExp(
     'gi'
 );
 
+// Hinglish inflects by suffix: the word list has "kar" but not "karke", "karne",
+// "karega". Every one of those was left in Latin and read as English. Stripping a
+// known suffix, translating the stem, then re-attaching the Hindi ending covers
+// inflections the list never enumerated.
+const HINGLISH_WORD_ENDINGS = {
+    ke: 'के', ne: 'ने', se: 'से', ko: 'को', me: 'में', mein: 'में',
+    ga: 'गा', gi: 'गी', ge: 'गे', nge: 'ंगे', enge: 'ेंगे',
+    ta: 'ता', ti: 'ती', te: 'ते', na: 'ना', ni: 'नी',
+    kar: 'कर', ke: 'के', ya: 'या', yi: 'यी',
+    ega: 'ेगा', egi: 'ेगी', unga: 'ूंगा', ungi: 'ूंगी',
+    a: 'ा', e: 'े', i: 'ी', o: 'ो', u: 'ु'
+};
+
+/**
+ * Try to read a word the way a Hindi speaker would, without a dictionary entry.
+ *
+ * Two rules, both conservative:
+ *  - Strip a known suffix, translate the stem, attach the Hindi ending.
+ *  - Otherwise, if the word is short and written in Hindi-shaped syllables
+ *    (no doubled consonants, no English-only clusters), transliterate it by
+ *    syllable rather than leaving it Latin.
+ *
+ * Returns null when neither applies, so genuinely English words stay English.
+ */
+function guessHindiWord(word) {
+    const lower = word.toLowerCase();
+
+    // Split the word at every possible point and keep the longest part that is in
+    // the list. Splitting on the known suffix alone is not enough: "jaate" is
+    // "jaa" + "te", but the suffix list would strip "te" and look for "ja".
+    for (let cut = lower.length - 1; cut >= 2; cut -= 1) {
+        // Try the literal stem, then the same stem with a doubled final vowel
+        // collapsed: "jaate" splits at "jaa", but the list has "ja", and
+        // "aata" splits at "aa" while the list has "a".
+        const literal = lower.slice(0, cut);
+        const candidates = [literal];
+        if (/(.)\1$/.test(literal)) candidates.push(literal.replace(/(.)\1$/, '$1'));
+
+        const stem = candidates.find((c) => HINGLISH_WORDS[c]);
+        if (!stem) continue;
+        const stemHindi = HINGLISH_WORDS[stem];
+
+        const ending = lower.slice(cut);
+        const hindiEnding = HINGLISH_WORD_ENDINGS[ending];
+        if (!hindiEnding) continue;
+
+        // A stem ending in a bare matra ("जा") keeps it when the ending starts
+        // with a vowel sign, otherwise the word loses its vowel: "जा" + "ते" is
+        // "जाते", never "जते". A stem ending in a consonant ("मिल") simply takes
+        // the ending: "मिलते".
+        const endsInMatra = /[\u093E\u093F\u0940\u0941\u0942\u0947\u0948\u094B\u094C]$/.test(stemHindi);
+        return stemHindi + (endsInMatra ? '' : '') + hindiEnding.replace(/^[\u093E-\u094C]?/, (m) => m);
+    }
+
+    return null;
+}
+
 /**
  * Rewrite Romanised Hinglish as Devanagari, leaving English words untouched.
  *
- * Word-level (never mid-word) so "hai" inside "chair" is safe, and case is
- * ignored so a sentence-initial "Tum" still matches.
+ * Word-level (never mid-word) so "hai" inside "chair" is safe. Order:
+ *   1. exact word list,
+ *   2. suffix/inflection guess,
+ *   3. leave it alone — an English word must stay English.
  *
  * Only used on the way to the speech engine. The transcript keeps Hinglish.
  */
 function toHindiScript(text) {
     return String(text ?? '')
+        // Pass 1: exact hits from the word list. This regex can only match words
+        // that are already keys, so it cannot catch a new inflection.
         .replace(HINGLISH_WORD_RE, (word) => {
             const lower = word.toLowerCase();
-            // Preserve the original casing of the first letter is pointless in
-            // Devanagari; the word list is what decides.
-            return HINGLISH_WORDS[lower] ?? HINGLISH_WORDS[word] ?? word;
+            return HINGLISH_WORDS[lower] ?? word;
         })
+        // Pass 2: everything the list missed, word by word. Without this pass the
+        // suffix rules never ran at all — a looked-up bug: "jaate" was not a key,
+        // so the replace callback was never invoked for it.
+        .replace(/\b[A-Za-z]{3,}\b/g, (word) => guessHindiWord(word) ?? word)
         .replace(/\b(Priya|Rocky|Sneha)\b/g, (word) => HINGLISH_PRONUNCIATION[word] ?? word);
 }
 
@@ -2008,7 +2024,7 @@ function buildVersePhrase(verseText) {
         .filter(Boolean);
 
     const phrase = lines.map((line) => {
-        const body = escapeXml(toHindiScript(line)).replace(
+        const body = speakableBody(normaliseForSpeech(line), 'neutral').replace(
             /,\s*/g,
             `,<break time="${SONG_PROSODY.commaBreak}"/>`
         );
@@ -2028,11 +2044,13 @@ function buildVersePhrase(verseText) {
 function buildSsml(text, tone) {
     const prosody = TONE_PROSODY[tone] ?? TONE_PROSODY.neutral;
 
-    const body = splitProseAndVerse(String(text))
+    // Normalise first: ellipses must become pauses before anything is escaped,
+    // otherwise Polly reads them out as "dot dot dot".
+    const body = splitProseAndVerse(normaliseForSpeech(text))
         .map((part) => {
             if (part.verse) return buildVersePhrase(part.text);
 
-            return escapeXml(toHindiScript(part.text))
+            return speakableBody(part.text, tone)
                 .split(/(?<=[.!?\u0964])\s+/)
                 .filter(Boolean)
                 .join(`<break time="${prosody.break}"/>`);
