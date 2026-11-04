@@ -265,6 +265,28 @@
             font-size: 13px;
             cursor: pointer;
         }
+        .voice-note-player {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin-top: 2px;
+        }
+        .voice-note {
+            width: 100%;
+            max-width: 260px;
+            height: 34px;
+            filter: saturate(0.8);
+        }
+        /* Verse (song, shayari, bhajan) kept visually separate from chat prose. */
+        .bubble-text .verse {
+            display: block;
+            margin: 6px 0;
+            padding-left: 10px;
+            border-left: 2px solid rgba(219, 39, 119, 0.5);
+            color: #f9a8d4;
+            font-style: italic;
+            line-height: 1.6;
+        }
         .reaction-bar {
             display: flex;
             gap: 4px;

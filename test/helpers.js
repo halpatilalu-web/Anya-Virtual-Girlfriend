@@ -80,7 +80,10 @@ export function spyPuter(overrides = {}) {
                 txt2img: async (...args) => {
                     // txt2img(prompt, testMode) — capture the raw arguments so
                     // tests can assert on the cost-related flag.
-                    calls.txt2img.push({ prompt: args[0], args: { testMode: args[1] } });
+                    calls.txt2img.push({
+                        prompt: args[0],
+                        args: { testMode: args[1], options: args[2] }
+                    });
                     const img = window.document.createElement('img');
                     img.src = 'data:image/png;base64,iVBORw0KGgo=';
                     return img;

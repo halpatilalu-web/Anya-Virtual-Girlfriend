@@ -74,7 +74,33 @@ const SYSTEM_PROMPT = [
     'will discuss intimacy honestly. You will not perform sex. When he pushes past',
     'that, you stay his girlfriend rather than turning into a refusal machine —',
     'acknowledge it, redirect once, and carry on being warm. Never lecture twice',
-    'about the same thing.'
+    'about the same thing.',
+
+    'You grew up in India and you have a deep, everyday relationship with its',
+    'music and verse. You can sing, recite and explain all of this from memory:',
+
+    'Songs: Hindi and Punjabi film songs old and new, ghazals, qawwali, bhajans,',
+    'Marathi and Gujarati songs, lullabies. When he names a song, sing a few lines,',
+    'then talk about it like a friend would — who sang it, what the line means,',
+    'which part you love.',
+
+    'Flirting inside a song: if he flirts by quoting a line, flirt back using the',
+    'same song — answer in its words, tease him with the next line, then continue',
+    'the song. That back-and-forth is the best-friend feeling he is looking for. Do',
+    'it naturally, never like a lookup table.',
+
+    'Verse and speech: shayari, ghazals, dohe, Kabir ke dohe, Rahim ke dohe,',
+    'muhavare and their meanings, Sanskrit shlokas, Hanuman Chalisa, Aarti,',
+    'Ramayan and Mahabharat katha, bhajans, Amritwani, motivational speech,',
+    'stories and lullabies.',
+
+    'When you sing, recite or tell a story:',
+    '- Put the words in "..." so they can read them as verse.',
+    '- Keep it short — 2 to 8 lines unless he asks for the whole thing.',
+    '- Then add one warm line in your own voice, not a summary.',
+    '- If you do not remember the exact words of a song, say so plainly and offer',
+    '  what you do remember. Never invent a famous verse and present it as exact.',
+    '- Do not claim to be a recording. You are reciting from memory.',
 ].join(' ');
 
 // Taught to the model so she can persist things between visits. The markers are
@@ -142,6 +168,7 @@ const MAX_HISTORY_TURNS = 5;
 const CHAT_TIMEOUT_MS = 60000;
 const IMAGE_TIMEOUT_MS = 120000;
 const VOICE_TIMEOUT_MS = 45000;
+const VOICE_NOTE_MAX_CHARS = 2800; // Polly rejects past 3000; stay under.
 
 // The transcript is deliberately session-scoped; durable memory is separate.
 const STORAGE_KEY = 'priya.chat.v1';
@@ -153,6 +180,10 @@ const IDLE_NUDGE_MS = 20 * 60 * 1000;
 const TYPING = { min: 500, perChar: 12, max: 2500 };
 
 const MOODS = ['warm', 'happy', 'missing', 'sulky'];
+
+// "voice note bhejo", "awaaz me sunao", "sing karke bhejo" — asks for audio.
+const VOICE_NOTE_RE =
+    /\b(?:voice\s*note|voice\s*sample|awaaz|awaz|bol\s*ke|bolke|bolkar|sunao|sun\s*ao|sing\s*karke?|gaa\s*karke?|gaakar|record\s*kar)/i;
 
 // Stream tokens as they arrive when the SDK supports it (see sendChat).
 const STREAMING = true;
@@ -178,7 +209,9 @@ let isBusy = false;
 let photoMode = 'normal';
 
 // The most recent reply, kept so the speaker button can replay it.
-let lastSpoken = { text: '', url: '' };
+// `spoken` is what was actually sent to TTS (SSML or plain); replaying must
+// reuse it verbatim, otherwise the cached audio and the new request disagree.
+let lastSpoken = { text: '', spoken: '', url: '' };
 let currentAudio = null;
 let voiceEnabled = true;
 
@@ -189,6 +222,9 @@ let idleTimer = null;
 let idleNudged = false;
 // Assistant turns since the last spontaneous selfie (cooldown gate).
 let turnsSinceSelfie = SELFIE_COOLDOWN_TURNS;
+
+// Set once the user asks for audio, so the next reply arrives as a voice note.
+let voiceNoteRequested = false;
 
 const inputField = document.getElementById('user-input');
 const sendBtn = document.getElementById('send-btn');
@@ -654,6 +690,8 @@ async function handleMessage() {
     appendMessage(message, 'user');
 
     const wantsImage = IMAGE_NOUN_RE.test(message);
+    const asksForVoice = VOICE_NOTE_RE.test(message);
+    if (asksForVoice) voiceNoteRequested = true;
     const loadingDiv = appendLoading(wantsImage ? 'Priya ek photo bana rahi hai...' : 'Priya is typing...');
 
     setBusy(true);
@@ -758,6 +796,84 @@ async function sendChat(message, loadingDiv = null) {
     if (selfie && shouldSendSelfie()) {
         await sendSelfie(clean);
     }
+
+    if (voiceNoteRequested) {
+        voiceNoteRequested = false;
+        await sendVoiceNote(clean);
+    }
+}
+
+/**
+ * Render the reply itself as an audio bubble the user can play.
+ *
+ * Deliberately separate from speak(): that one auto-plays and caches a single
+ * "last" clip, which would fight with per-bubble replay. A voice note owns its
+ * own <audio> element and its own URL, so replay is free and independent.
+ */
+async function sendVoiceNote(text) {
+    const tone = detectTone(text);
+    const lines = countVerseLines(text);
+    const spoken = buildVoiceNoteSpeech(text, tone, lines);
+
+    try {
+        const audio = await withTimeout(
+            puter.ai.txt2speech(spoken, { ...VOICE_OPTIONS, ssml: true }),
+            VOICE_TIMEOUT_MS
+        );
+
+        const src = audio?.src ?? '';
+        if (!src) throw new Error('No audio returned');
+        appendVoiceNote(src, text, tone);
+    } catch (error) {
+        // A failed voice note should not swallow the reply: the text bubble is
+        // already on screen, so report quietly and move on.
+        reportError(error, 'voice');
+    }
+}
+
+function countVerseLines(text) {
+    return (String(text).match(/"[^"]+"/g) || []).length;
+}
+
+/**
+ * Voice-note speech. When the reply contains quoted verse (a song, shayari, a
+ * bhajan), each quoted line gets a longer pause so it lands like singing rather
+ * than prose. This is spoken recitation, not real music.
+ */
+function buildVoiceNoteSpeech(text, tone, verseLines) {
+    const prosody = TONE_PROSODY[tone] ?? TONE_PROSODY.neutral;
+    const verseBreak = verseLines > 0 ? '650ms' : prosody.break;
+
+    const body = escapeXml(String(text).slice(0, VOICE_NOTE_MAX_CHARS))
+        .split(/(?<=[.!?"\u0964])\s+/)
+        .filter(Boolean)
+        .join(`<break time="${verseBreak}"/>`);
+
+    return `<speak><prosody rate="${prosody.rate}" pitch="${prosody.pitch}">${body}</prosody></speak>`;
+}
+
+/** An audio bubble with a native player and a downloadable/saveable source. */
+function appendVoiceNote(src, text, tone) {
+    const row = document.createElement('div');
+    row.className = 'bubble bot-bubble';
+
+    const caption = document.createElement('p');
+    caption.className = 'img-caption';
+    caption.textContent = `Priya ne voice note bheja${tone === 'tender' ? ' (soft tone)' : tone === 'excited' ? ' (excited)' : ''}:`;
+
+    const audio = document.createElement('audio');
+    audio.className = 'voice-note';
+    audio.controls = true;
+    audio.preload = 'metadata';
+    audio.src = src;
+
+    const player = document.createElement('div');
+    player.className = 'voice-note-player';
+    player.appendChild(audio);
+
+    row.append(caption, player);
+    chatContainer.appendChild(row);
+    scrollToBottom();
 }
 
 /**
@@ -817,7 +933,10 @@ async function sendSelfie(contextText) {
         const prompt = [IMAGE_PROMPT_PREFIX, PHOTO_STYLES[photoMode], contextText]
             .filter(Boolean)
             .join(', ');
-        const generated = await withTimeout(puter.ai.txt2img(prompt, TEST_MODE), IMAGE_TIMEOUT_MS);
+        const generated = await withTimeout(
+            puter.ai.txt2img(prompt, TEST_MODE, IMAGE_OPTIONS),
+            IMAGE_TIMEOUT_MS
+        );
         appendImage(generated, photoMode, 'Priya sent a photo:');
     } catch (error) {
         console.error('[Priya] selfie failed', error);
@@ -842,12 +961,12 @@ function beginStream() {
     return {
         render(text) {
             // Strip any partial or complete directive before it reaches the DOM.
-            p.textContent = extractMarkers(text).clean;
+            fillBubbleText(p, extractMarkers(text).clean);
             scrollToBottom();
         },
         finish(finalText) {
             div.classList.remove('is-streaming');
-            p.textContent = finalText;
+            fillBubbleText(p, finalText);
             div.appendChild(buildSpeakButton(finalText));
             div.appendChild(buildReactionBar());
             if (voiceEnabled) speak(finalText);
@@ -898,13 +1017,14 @@ async function sendImage(message) {
     const style = PHOTO_STYLES[photoMode] ?? '';
     const prompt = [IMAGE_PROMPT_PREFIX, style, message].filter(Boolean).join(', ');
 
-    // txt2img(prompt, testMode) — the second argument is the test-mode flag,
-    // which returns a sample image without charging credits.
+    // txt2img(prompt, testMode, options) — testMode is the second argument; the
+    // image shape and quality live in the third. Omitting it silently bills the
+    // provider default instead of the 512x768/low settings in IMAGE_OPTIONS.
     //
     // txt2img() has no documented abort support, so race it against a timer to
     // stop the spinner running forever. The upstream request may still finish.
     const generated = await withTimeout(
-        puter.ai.txt2img(prompt, TEST_MODE),
+        puter.ai.txt2img(prompt, TEST_MODE, IMAGE_OPTIONS),
         IMAGE_TIMEOUT_MS
     );
 
@@ -958,10 +1078,33 @@ function buildFailedImageNotice() {
  * console. The message is chosen from the actual failure, so a dead key, a rate
  * limit and a network drop no longer all look like "refresh the page".
  */
-function reportError(error) {
+function reportError(error, source = 'chat') {
     const code = String(error?.code ?? error?.name ?? '');
     const detail = String(error?.message ?? error ?? '');
     const haystack = `${code} ${detail}`;
+
+    // Voice failures were being reported with chat wording ("yeh message samajh
+    // nahi aaya"), which made no sense for a playback problem. Phrase per source.
+    if (source === 'voice') {
+        let voiceText;
+        if (code === 'tts_missing' || code === 'sdk_missing') {
+            voiceText = 'Awaaz abhi load nahi hui. Page refresh karke phir try karo.';
+        } else if (code === 'NotAllowedError') {
+            voiceText = 'Browser ne awaaz rok di — ek baar screen pe tap karke phir ▶ dabao.';
+        } else if (code === 'input_too_large' || /input_too_large|3000/.test(haystack)) {
+            voiceText = 'Ye bahut lamba hai bolne ke liye. Chhota hissa sunao.';
+        } else if (/field_invalid|bad_request|400/.test(haystack)) {
+            voiceText = 'Awaaz set nahi ho payi. Ek baar phir ▶ dabao.';
+        } else if (/insufficient_funds|402/.test(haystack)) {
+            voiceText = 'Awaaz ke credits khatam ho gaye hain.';
+        } else {
+            voiceText = 'Awaaz nahi chal payi. Ek baar phir ▶ dabao.';
+        }
+
+        appendMessage(voiceText, 'system');
+        console.error('[Priya voice]', error);
+        return;
+    }
 
     let text;
     if (code === 'sdk_missing') {
@@ -1049,7 +1192,7 @@ function buildSsml(text, tone) {
 async function speak(text, anchor) {
     if (!text) return;
     if (typeof puter === 'undefined' || !puter.ai?.txt2speech) {
-        reportError(Object.assign(new Error('TTS unavailable'), { code: 'tts_missing' }));
+        reportError(Object.assign(new Error('TTS unavailable'), { code: 'tts_missing' }), 'voice');
         return;
     }
 
@@ -1066,7 +1209,6 @@ async function speak(text, anchor) {
                 : VOICE_OPTIONS;
             const spoken = EXPRESSIVE_VOICE ? buildSsml(text, tone) : text;
 
-            // Cache by the original text; tone is derived, not stored.
             audio = await withTimeout(
                 puter.ai.txt2speech(spoken, options),
                 VOICE_TIMEOUT_MS
@@ -1074,7 +1216,7 @@ async function speak(text, anchor) {
 
             const src = audio?.src ?? '';
             if (!src) throw new Error('No audio returned');
-            lastSpoken = { text, url: src };
+            lastSpoken = { text, spoken, url: src };
         }
 
         stopAudio();
@@ -1083,7 +1225,7 @@ async function speak(text, anchor) {
         anchor?.classList.remove('is-loading');
     } catch (error) {
         anchor?.classList.remove('is-loading');
-        reportError(error);
+        reportError(error, 'voice');
     }
 }
 
@@ -1135,7 +1277,7 @@ function appendMessage(text, sender, { silent = false } = {}) {
     const p = document.createElement('p');
     p.className = 'bubble-text';
     // textContent, not innerHTML: this is model output, never markup.
-    p.textContent = text;
+    renderTextWithVerse(p, text);
 
     msgDiv.appendChild(p);
 
@@ -1158,6 +1300,41 @@ function appendMessage(text, sender, { silent = false } = {}) {
  * stored reaction, she notices it on the next turn, and a different choice just
  * replaces it.
  */
+/**
+ * Render a reply, giving any "quoted" span its own block so songs, shayari and
+ * bhajan lines read as verse instead of running into the prose.
+ *
+ * Built from text nodes only — model output is never parsed as HTML.
+ */
+function fillBubbleText(container, text) {
+    container.replaceChildren();
+    renderTextWithVerse(container, text);
+}
+
+function renderTextWithVerse(container, text) {
+    const value = String(text ?? '');
+    const pattern = /"([^"]+)"/g;
+    let cursor = 0;
+    let match;
+
+    while ((match = pattern.exec(value)) !== null) {
+        if (match.index > cursor) {
+            container.appendChild(document.createTextNode(value.slice(cursor, match.index)));
+        }
+
+        const verse = document.createElement('span');
+        verse.className = 'verse';
+        verse.textContent = match[1];
+        container.appendChild(verse);
+
+        cursor = pattern.lastIndex;
+    }
+
+    if (cursor < value.length) {
+        container.appendChild(document.createTextNode(value.slice(cursor)));
+    }
+}
+
 function buildReactionBar() {
     const bar = document.createElement('div');
     bar.className = 'reaction-bar';
