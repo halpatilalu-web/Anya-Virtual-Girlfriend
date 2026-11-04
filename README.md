@@ -489,6 +489,45 @@ redirect — rather than turning into a refusal machine that lectures on every
 turn. (A test guards that line, because a preachy assistant is a worse product
 than a warm one with limits.)
 
+## Guide mode (18+)
+
+The honest answer to "adult chat": Priya can be a **sex-education companion**,
+not a performer. Guide mode is a switch in the header (the **Guide** button) that
+changes what she is doing in the conversation — same person, same warm Hinglish,
+different job.
+
+What it does:
+
+- Explains bodies, contraception, STIs and consent in **ordinary Hindi/Hinglish**,
+  the way a friend explains it. Ordinary words first (`safed paani`), clinical
+  term in brackets once (`discharge`) if it helps him look it up.
+- Correct typical-use effectiveness, not brochure numbers: condom **87% typical
+  / 98% perfect** and the only method that also blocks STIs; pill 91–93%; IUD and
+  implant >99%; injection 96%; withdrawal ~80%; emergency pill ~89% within 72 h,
+  copper IUD within 5 days is the most effective option.
+- Corrections for the myths that actually cause harm: pregnancy is possible
+  during her period and the first time; there is no test for virginity; two
+  condoms increase breakage rather than safety.
+- **Consent**, including India's age of consent (18, POCSO Act 2012,
+  gender-neutral, BNS 2023) and how to actually ask — `"yeh theek hai?"`,
+  `"rukna hai?"` — out loud, every time.
+- **How to talk to a girlfriend**: listening, asking instead of assuming,
+  handling a no without sulking, talking about protection without making it
+  awkward. That is the part most apps skip and the part that changes behaviour.
+- Red flags that mean *see a doctor*, not *ask the chatbot*.
+
+What it does not do: explicit sexual roleplay or erotic narration. The providers
+behind Puter block that upstream, so it would be a button that always fails. What
+ships instead is candid, accurate, shame-free education — which is the version
+people can actually learn from.
+
+The **18+ gate** is deliberate. Guide mode only turns on after an explicit
+confirmation (`"Main 18+ hu"`), the confirmation is stored separately from the
+mode flag, and `loadMemory()` refuses to honour `chatMode: 'guide'` without it —
+so editing `localStorage` cannot skip the gate. Confirming also starts a fresh
+thread, because carrying flirty turns into a lesson produces answers in the
+wrong voice.
+
 ### Why not just loosen the prompt
 
 Not a limitation to work around. Every model Puter routes to (OpenAI, Anthropic,

@@ -1709,3 +1709,146 @@ describe('persistence', () => {
         assert.ok(app.text().includes('Main Priya hu'), 'greeting restored');
     });
 });
+
+// ---------------------------------------------------------------------------
+// Guide mode (18+ sex education)
+// ---------------------------------------------------------------------------
+
+describe('guide mode', () => {
+    const personaPrompt = (spy) => spy.calls.chat[0].messages[0].content;
+    const stored = (app) => JSON.parse(app.window.localStorage.getItem('priya.memory.v1'));
+
+    it('stays off until the 18+ gate is confirmed', async () => {
+        const spy = spyPuter();
+        const app = boot(spy.factory);
+
+        // The button opens the panel, but the gate is what is on screen.
+        app.document.getElementById('guide-btn').click();
+        assert.equal(app.document.getElementById('guide-panel').hidden, false);
+        assert.equal(app.document.getElementById('guide-gate').hidden, false);
+        assert.equal(app.document.getElementById('guide-body').hidden, true);
+
+        await app.send('condom kaise use karte hai');
+        assert.ok(!personaPrompt(spy).includes('sex education'), 'no guide block without confirmation');
+        assert.equal(stored(app).adultConfirmed, false);
+    });
+
+    it('cancelling the gate denies nothing and changes nothing', () => {
+        const app = boot(spyPuter().factory);
+        app.document.getElementById('guide-btn').click();
+        app.document.getElementById('guide-gate-no').click();
+
+        assert.equal(app.document.getElementById('guide-panel').hidden, true);
+        assert.equal(stored(app).adultConfirmed, false);
+        assert.equal(stored(app).chatMode, 'girlfriend');
+    });
+
+    it('confirming 18+ unlocks the panel and switches the prompt', async () => {
+        const spy = spyPuter({ reply: 'Samjho, condom har baar.' });
+        const app = boot(spy.factory);
+        app.document.getElementById('guide-btn').click();
+        app.document.getElementById('guide-gate-yes').click();
+        await new Promise((r) => setTimeout(r, 10));
+
+        assert.equal(app.document.getElementById('guide-gate').hidden, true);
+        assert.equal(app.document.getElementById('guide-body').hidden, false);
+        assert.equal(stored(app).adultConfirmed, true);
+        assert.equal(stored(app).chatMode, 'guide');
+
+        await app.send('condom kaise use karte hai');
+        assert.ok(personaPrompt(spy).includes('sex education'), 'guide block present');
+        assert.ok(personaPrompt(spy).includes('POCSO'), 'consent law included');
+    });
+
+    it('shows a badge in the header while guide mode is on', async () => {
+        const app = boot(spyPuter().factory);
+        app.document.getElementById('guide-btn').click();
+        app.document.getElementById('guide-gate-yes').click();
+        await new Promise((r) => setTimeout(r, 10));
+
+        assert.equal(app.document.getElementById('mode-badge').hidden, false);
+        assert.equal(app.document.getElementById('mode-badge').textContent, 'Guide mode');
+    });
+
+    it('normal chats keep the flirty prompt', async () => {
+        const spy = spyPuter();
+        const app = boot(spy.factory);
+        await app.send('aaj kya kar rahi ho');
+
+        assert.ok(!personaPrompt(spy).includes('sex education'));
+        assert.equal(app.document.getElementById('mode-badge').hidden, true);
+    });
+
+    it('toggling back to girlfriend drops the guide block', async () => {
+        const spy = spyPuter();
+        const app = boot(spy.factory);
+        app.document.getElementById('guide-btn').click();
+        app.document.getElementById('guide-gate-yes').click();
+        await new Promise((r) => setTimeout(r, 10));
+
+        app.document.getElementById('guide-mode-btn').click();
+        await new Promise((r) => setTimeout(r, 10));
+        await app.send('chalo ghumne chale');
+
+        assert.ok(!personaPrompt(spy).includes('sex education'));
+    });
+
+    it('revoking 18+ also turns guide mode off', async () => {
+        const spy = spyPuter();
+        const app = boot(spy.factory);
+        app.document.getElementById('guide-btn').click();
+        app.document.getElementById('guide-gate-yes').click();
+        await new Promise((r) => setTimeout(r, 10));
+
+        app.document.getElementById('guide-revoke').click();
+        await new Promise((r) => setTimeout(r, 10));
+        await app.send('hello');
+
+        assert.equal(stored(app).adultConfirmed, false);
+        assert.equal(stored(app).chatMode, 'girlfriend');
+        assert.ok(!personaPrompt(spy).includes('sex education'), 'guide prompt removed');
+    });
+
+    it('cannot be enabled by writing the mode key alone', async () => {
+        // A tampered save must not skip the gate.
+        const spy = spyPuter();
+        const app = boot(spy.factory);
+        const saved = stored(app);
+        saved.chatMode = 'guide';
+        saved.adultConfirmed = false;
+
+        const tamperSpy = spyPuter();
+        const tampered = boot((window) => {
+            window.localStorage.setItem('priya.memory.v1', JSON.stringify(saved));
+            return tamperSpy.factory(window);
+        });
+        await tampered.send('hello');
+        assert.ok(!personaPrompt(tamperSpy).includes('sex education'));
+    });
+
+    it('remembers the mode and the confirmation across reloads', async () => {
+        const spy = spyPuter({ reply: 'Theek hai ❤️' });
+        const app = boot(spy.factory);
+        app.document.getElementById('guide-btn').click();
+        app.document.getElementById('guide-gate-yes').click();
+        await new Promise((r) => setTimeout(r, 10));
+
+        // Simulate a reload: seed storage *before* app.js runs.
+        const saved = app.window.localStorage.getItem('priya.memory.v1');
+        const reloadSpy = spyPuter({ reply: 'Theek hai ❤️' });
+        const reloaded = boot((window) => {
+            window.localStorage.setItem('priya.memory.v1', saved);
+            return reloadSpy.factory(window);
+        });
+
+        // The panel opens straight to the body, not the gate.
+        assert.equal(reloaded.document.getElementById('guide-gate').hidden, true);
+        assert.equal(reloaded.document.getElementById('guide-body').hidden, false);
+        assert.equal(reloaded.document.getElementById('mode-badge').hidden, false);
+
+        await reloaded.send('dobara bolo');
+        const prompt = reloadSpy.calls.chat[reloadSpy.calls.chat.length - 1].messages[0].content;
+        assert.ok(prompt.includes('sex education'), 'still in guide mode after reload');
+    });
+
+});
