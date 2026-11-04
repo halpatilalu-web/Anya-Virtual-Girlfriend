@@ -2091,3 +2091,85 @@ describe('speech polish', () => {
         assert.match(ssml, /गाते/, 'gaate');
     });
 });
+
+// ---------------------------------------------------------------------------
+// Mood read from the room, not just the reply
+// ---------------------------------------------------------------------------
+
+describe('situational tone', () => {
+    const toneOf = async (message, reply) => {
+        const spy = spyPuter({ reply });
+        const app = boot(spy.factory);
+        await app.send(`${message} voice note bhejo`);
+        await new Promise((r) => setTimeout(r, 30));
+        const ssml = spy.calls.txt2speech.at(-1)?.text ?? '';
+        const match = ssml.match(/rate="(\d+%)"/);
+        return match ? match[1] : null;
+    };
+
+    it('goes quiet when he writes something heavy, whatever the reply looks like', async () => {
+        // A cheerful reply to a sad message is a misread; the voice must not
+        // follow it there.
+        const rate = await toneOf('aaj bahut udaas hu yaar', 'Arre mazaak karein?');
+        assert.equal(rate, '84%', 'used the close, slow tone');
+    });
+
+    it('does not go quiet when he is clearly happy', async () => {
+        const rate = await toneOf('aaj bahut khush hu yaar', 'Arre wah, batao!');
+        assert.notEqual(rate, '84%', 'stayed bright');
+    });
+
+    it('leaves an ordinary daytime message alone', async () => {
+        const rate = await toneOf('kya kar rahi ho aaj', 'Bas ghar pe hu yaar');
+        assert.equal(rate, '98%', 'neutral stays neutral');
+    });
+
+    it('uses the heavy-word list on real spellings', async () => {
+        for (const phrase of ['pareshan hu', 'mood kharab hai', 'thak gaya hu']) {
+            const rate = await toneOf(phrase, 'Acha suno, main hu na.');
+            assert.equal(rate, '84%', `${phrase} should soften her`);
+        }
+    });
+
+    it('does not fire on a word that merely contains a keyword', async () => {
+        // "dilip" contains "dil" and must not be read as heavy.
+        const rate = await toneOf('dilip se baat hui aaj', 'Acha, kya bola usne?');
+        assert.equal(rate, '98%');
+    });
+});
+
+// ---------------------------------------------------------------------------
+// Photos drawn from the scene she describes
+// ---------------------------------------------------------------------------
+
+describe('scene-aware photos', () => {
+    it('sends only the scene sentence to the image model', async () => {
+        const spy = spyPuter({
+            reply: 'Aaj main ghar pe hu, balcony me baithi hui. Tum kahan ho? [[selfie]]'
+        });
+        const app = boot(spy.factory);
+        // Burn the cooldown so a spontaneous selfie is allowed.
+        for (let i = 0; i < 5; i += 1) await app.send(`baat ${i}`);
+
+        assert.ok(spy.calls.txt2img.length > 0, 'a photo was requested');
+        const prompt = spy.calls.txt2img.at(-1).prompt;
+        assert.match(prompt, /balcony/i, 'the scene is in the prompt');
+        assert.ok(!prompt.includes('[['), 'markers never reach the image model');
+        assert.ok(!/Tum kahan ho/.test(prompt), 'her question is not part of the scene');
+    });
+
+    it('falls back to a plain portrait when there is no scene', async () => {
+        const spy = spyPuter({ reply: 'Haan jaan bolo na. [[selfie]]' });
+        const app = boot(spy.factory);
+        for (let i = 0; i < 5; i += 1) await app.send(`baat ${i}`);
+
+        const prompt = spy.calls.txt2img.at(-1).prompt;
+        assert.ok(!prompt.includes('[['), 'markers stripped even with no scene');
+        assert.match(prompt, /beautiful 22 year old Indian woman/i, 'identity prefix survives');
+    });
+
+    it('teaches her to include a place in the message', () => {
+        const source = readFileSync(new URL('../app.js', import.meta.url), 'utf8');
+        assert.match(source, /ghar pe hu, balcony me, shaam ki roshni/);
+    });
+});

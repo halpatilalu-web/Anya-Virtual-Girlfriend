@@ -358,6 +358,34 @@ at the previous reply; if the new one opens with the same stock phrase
 sentence is left behind, so a one-line `Haan jaan ❤️` survives intact. One is
 warmth. Three in a row is a tic, and a tic is the loudest possible tell.
 
+### Reading the room
+
+Tone used to come from the reply alone — emoji and ellipses in *her* words. That
+meant a cheerful answer to a sad message got a cheerful voice, which is the
+opposite of comfort.
+
+`readSituationalTone()` now reads what he wrote and what time it is:
+
+- **Heavy words** (`udaas`, `pareshan`, `thak gaya`, `mood kharab`, …) put her in
+  the close tone regardless of how the reply is punctuated, and add a prompt
+  instruction: hear him first, do not cheer him up in one message.
+- **Late night** (23:00–05:00) softens her unless he is clearly upbeat.
+- **Upbeat words** (`khush`, `maza`, `bhaiya`, `party`, …) keep her bright.
+
+The word lists match on boundaries, so `dilip` does not fire on `dil`. Heavy
+outranks the reply's own punctuation on purpose: if the model misreads the room,
+the voice should not follow it there.
+
+### Photos follow the scene
+
+The whole reply used to be handed to the image model as the prompt, so emoji,
+`[[markers]]` and third-person narration all went with it. `sceneFromReply()`
+strips markers and emoji, then keeps the first sentence that actually names a
+place or a moment (`ghar`, `balcony`, `barish`, `saree`, …), capped at 140
+characters. Nothing matches → no scene → a plain portrait rather than a garbled
+one. The prompt now also asks her to put the place in the message when she sends
+a selfie, which is what makes the drawn photo match what she just said.
+
 ### Speech polish
 
 Found by reading the actual SSML that reaches the voice, not by guessing:

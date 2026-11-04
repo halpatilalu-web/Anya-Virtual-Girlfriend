@@ -321,6 +321,9 @@ const MARKER_RULES = [
     'ready, you miss him, something reminded you of him, he asked how you look —',
     'add [[selfie]] on its own line at the end. Do this rarely, at most once every',
     'few messages, never twice in a row.',
+    'When you do, put the place and the moment in the same message, in plain',
+    'words: "ghar pe hu, balcony me, shaam ki roshni". The photo is drawn from that',
+    'sentence, so a sentence without a place or a moment gets you a plain portrait.',
     'Use at most two such lines, and only when there is something genuinely new.',
     'Never mention these lines, never explain them, never put them mid-sentence.'
 ].join(' ');
@@ -1071,6 +1074,23 @@ function buildSystemPrompt() {
     // person: same name, same warm Hinglish, different job in this chat.
     const parts = [persona];
 
+    // Tell her what the room is like, so the words match the voice. Without this
+    // a sad message gets a cheerful answer, and the slow voice then sounds
+    // sarcastic rather than comforting.
+    const room = readSituationalTone(lastUserMessage());
+    if (room.wantsGentle) {
+        context.push(
+            'He is having a hard time right now. Do not fix it in one message and do ' +
+            'not cheer him up before you have heard him. Short, quiet, close. Ask one ' +
+            'thing, then let him answer.'
+        );
+    } else if (room.lateNight) {
+        context.push(
+            'It is late where he is. Talk the way people talk at that hour — quieter, ' +
+            'a little slower, no exclamation marks unless something just happened.'
+        );
+    }
+
     if (closeMoodOn()) {
         context.push(
             'He has turned the close switch on. Talk like you are next to him in a ' +
@@ -1546,12 +1566,12 @@ async function sendChat(message, loadingDiv = null) {
     else bubble.finish(clean);
 
     if (selfie && shouldSendSelfie()) {
-        await sendSelfie(clean);
+        await sendSelfie(sceneFromReply(clean));
     }
 
     if (voiceNoteRequested) {
         voiceNoteRequested = false;
-        await sendVoiceNote(clean);
+        await sendVoiceNote(clean, message);
     }
 }
 
@@ -1628,8 +1648,8 @@ async function synthesiseSpeech(text, tone) {
  * "last" clip, which would fight with per-bubble replay. A voice note owns its
  * own <audio> element and its own URL, so replay is free and independent.
  */
-async function sendVoiceNote(text) {
-    const tone = detectTone(text);
+async function sendVoiceNote(text, message = '') {
+    const tone = detectTone(text, message);
 
     try {
         const { url } = await synthesiseSpeech(text, tone);
@@ -1723,6 +1743,37 @@ function shouldSendSelfie() {
  * mood. When the user has given a reference photo it is attached as an input
  * image, which is what actually anchors the face — text alone drifts.
  */
+// Words that describe a place or a moment. If her reply has one of these, the
+// photo is of that, not of a generic portrait.
+const SCENE_WORDS_RE =
+    /\b(?:ghar|ghar\s*pe|kamre|room|bistar|bed|sofa|balcony|chhat|terrace|kitchen|rasoi|office|college|class|cafe|coffee|restaurant|hotel|beach|samundar|pahad|pahaad|park|garden|baag|bazaar|market|mall|train|bus|metro|auto|car|gaadi|shaam|raat|subah|dopahar|barish|baarish|dhoop|chand|taare|diwali|holi|shaadi|party|birthday|saree|kurti|salwar|lehenga|jeans|top|dress|makeup|lipstick|jewel|payal|bindi|chudi)\b/i;
+
+/**
+ * Pull the scene out of her reply for the image model.
+ *
+ * The whole reply used to be sent as the prompt, which meant emoji, marker
+ * directives and third-person narration all went to the image model — a
+ * sentence about ordering chai became a photo of "chai ke liye [[remember:
+ * he likes chai]]". Now: the first sentence that actually describes a place or
+ * a moment, cleaned of emoji and markers, capped in length. If nothing does,
+ * there is no scene to draw and the photo stays a plain portrait.
+ */
+function sceneFromReply(reply) {
+    const text = String(reply ?? '')
+        .replace(/\[\[.*?\]\]/g, ' ')
+        .replace(/[\u{1F000}-\u{1FAFF}\u{2600}-\u{27BF}\u{FE00}-\u{FE0F}\u{2B00}-\u{2BFF}]/gu, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+
+    if (!text) return '';
+
+    const sentences = text.split(/(?<=[.!?\u0964])\s+/).map((line) => line.trim()).filter(Boolean);
+    const sceneSentence = sentences.find((line) => SCENE_WORDS_RE.test(line));
+
+    if (sceneSentence) return sceneSentence.slice(0, 140);
+    return '';
+}
+
 function buildImagePrompt(sceneText, mode = photoMode, baseOptions = IMAGE_OPTIONS) {
     // The free route has no image-to-image, so on that route the identity block
     // in words is the only thing holding the face together.
@@ -2040,17 +2091,65 @@ function withTimeout(promise, ms) {
  * costs the same monthly allowance as everything else, so the resulting URL is
  * cached for the most recent reply — replaying it is free.
  */
+// Words that mean he is low. Matched on word boundaries so "dil" does not fire
+// inside "dilip".
+const HEAVY_WORDS_RE =
+    /\b(?:udaas|dukhi|rona|ro\s*raha|rona\s*aa|akela|akeli|tired|thak\s*gaya|thak\s*gayi|pareshan|tension|stress|depress|bura\s*lag|mood\s*kharab|kharab\s*chal|kahi\s*nahi|kuch\s*nahi\s*acha|anjani|anjaan)\b/i;
+
+// Words that mean he is up.
+const LIGHT_WORDS_RE =
+    /\b(?:khush|maza|mazaa|haha|hehe|lol|party|mubarak|badhai|jeet|pass\s*ho|select|acha\s*lag\s*raha|bhadiya|badiya|zabardast|shaandaar|wah|awesome|amazing)\b/i;
+
 /**
- * Guess how a reply should sound from its own shape — no extra model call, so
- * it costs nothing. Emoji and exclamation marks lean excited; ellipses, ellipsis
- * dots and sad emoji lean tender.
+ * Everything the speaker reacts to except the reply itself.
+ *
+ * Read once per turn so the reply does not have to carry its own mood. If he
+ * writes something heavy at 2 a.m., the answer should be quiet whether or not
+ * the model remembered to put an ellipsis in it.
  */
-function detectTone(text) {
+function readSituationalTone(message) {
+    const said = String(message ?? '');
+    const hour = new Date().getHours();
+
+    const heavy = HEAVY_WORDS_RE.test(said);
+    const light = LIGHT_WORDS_RE.test(said);
+    const lateNight = hour >= 23 || hour < 5;
+    const earlyMorning = hour >= 5 && hour < 8;
+
+    return {
+        heavy,
+        light,
+        lateNight,
+        earlyMorning,
+        // Two heavy signals, or one heavy signal at night, is a quiet reply.
+        wantsGentle: heavy && (lateNight || !light)
+    };
+}
+
+/**
+ * Guess how a reply should sound — no extra model call, so it costs nothing.
+ *
+ * Two inputs, in this order of authority:
+ *   1. What he just said and what time it is. This outranks the reply's own
+ *      punctuation, because a model that answers a sad message with a cheerful
+ *      one has misread the room, and the voice should not follow it there.
+ *   2. The shape of the reply: emoji and exclamation marks lean excited,
+ *      ellipses and sad emoji lean tender.
+ */
+function detectTone(text, message = '') {
     const value = String(text ?? '');
+    const situation = readSituationalTone(message);
+
+    // He is having a bad night. Quiet and close, whatever the text looks like.
+    if (situation.wantsGentle) return 'intimate';
+
     if (!value) return 'neutral';
 
     const excited = (value.match(/[!\u{1F60D}\u{1F60A}\u{1F389}\u{1F525}]/gu) || []).length;
     const tender = (value.match(/[\.\u2026\u{1F97A}\u{1F614}\u2764]/gu) || []).length;
+
+    // Late night on its own still softens her, unless he is clearly upbeat.
+    if (situation.lateNight && !situation.light && excited <= tender) return 'intimate';
 
     // In 18+ mode she leans close by default, so the same affectionate line does
     // not come out in her daytime voice.
@@ -2554,6 +2653,15 @@ function buildSsml(text, tone) {
     ].join('');
 }
 
+/**
+ * The message she is currently answering. Used when a tone has to be guessed
+ * outside the send path (auto-play, replay button), where the user's own words
+ * are no longer in scope.
+ */
+function lastUserMessage() {
+    return chatHistory.length > 0 ? chatHistory[chatHistory.length - 1].user : '';
+}
+
 async function speak(text, anchor) {
     if (!text) return;
     if (typeof puter === 'undefined' || !puter.ai?.txt2speech) {
@@ -2568,7 +2676,7 @@ async function speak(text, anchor) {
         } else {
             stopAudio();
             anchor?.classList.add('is-loading');
-            const tone = detectTone(text);
+            const tone = detectTone(text, lastUserMessage());
 
             // Cache the URL that actually worked, whichever route produced it —
             // so a replay is free even when the SSML attempt had to be skipped.
