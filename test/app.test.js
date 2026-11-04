@@ -192,12 +192,22 @@ describe('images', () => {
         assert.ok(app.text().includes('Photo nahi ban payi'));
     });
 
-    it('pins a low quality tier so an upstream default change cannot raise cost', () => {
+    it('pins the cheapest Seedream tier and an explicit model', () => {
+        // Seedream is the default for face consistency, but its price doubles
+        // between 1K and 2K, so the tier must never drift to a default.
         const source = readFileSync(new URL('../app.js', import.meta.url), 'utf8');
-        const options = source.match(/const IMAGE_OPTIONS = \{([^}]*)\}/);
+        const options = source.match(/const IMAGE_OPTIONS = \{([\s\S]*?)\n\};/);
 
-        assert.ok(options, 'IMAGE_OPTIONS should be a single-line object literal');
-        assert.match(options[1], /quality:\s*'low'/, "quality must stay pinned to 'low'");
+        assert.ok(options, 'IMAGE_OPTIONS object literal should exist');
+        assert.match(options[1], /quality:\s*'1K'/, "quality must stay pinned to '1K'");
+        assert.match(options[1], /model:\s*'[^']*seedream-5-0-pro/, 'model must be explicit');
+        assert.match(options[1], /provider:\s*'byteplus'/, 'provider must be explicit');
+    });
+
+    it('keeps a fallback route so a dead model still produces a photo', () => {
+        const source = readFileSync(new URL('../app.js', import.meta.url), 'utf8');
+        assert.match(source, /const IMAGE_FALLBACK_OPTIONS = \{/);
+        assert.match(source, /async function generateImage/);
     });
 
     it('actually sends the pinned image options, not just declares them', async () => {
@@ -209,9 +219,10 @@ describe('images', () => {
 
         const { options } = spy.calls.txt2img[0].args;
         assert.ok(options, 'third txt2img argument must be the options object');
-        assert.equal(options.width, 512);
-        assert.equal(options.height, 768);
-        assert.equal(options.quality, 'low');
+        assert.equal(options.quality, '1K');
+        assert.match(options.model, /seedream-5-0-pro/);
+        assert.equal(options.ratio.w, 3);
+        assert.equal(options.ratio.h, 4);
     });
 
     it('keeps test mode off, since it would show sample images to real users', () => {
@@ -292,6 +303,188 @@ describe('error handling', () => {
         await app.send('hi');
 
         assert.ok(app.text().includes('AI service load nahi hui'));
+    });
+});
+
+describe('voice fallback chain', () => {
+    // The user's report: pressing play showed "Awaaz set nahi ho payi" — the
+    // SSML request was rejected and there was no second route.
+    const appWithTts = (txt2speech) =>
+        boot((window) => ({
+            ai: {
+                chat: async () => ({ message: { content: 'Suno na ❤️ "halke halke" ❤️' } }),
+                txt2img: async () => null,
+                txt2speech
+            }
+        }));
+
+    const click = async (app) => {
+        app.$('.speak-btn').click();
+        await new Promise((r) => setTimeout(r, 80));
+    };
+
+    it('retries without SSML when the SSML request is rejected', async () => {
+        const seen = [];
+        const app = appWithTts(async (text, options) => {
+            seen.push(options);
+            if (options.ssml) {
+                throw Object.assign(new Error('bad_request'), { code: 'bad_request' });
+            }
+            const audio = app.window.document.createElement('audio');
+            audio.src = 'data:audio/mp3;base64,OK';
+            return audio;
+        });
+
+        await app.send('hi');
+        await click(app);
+
+        assert.equal(seen.length, 2, 'SSML then plain');
+        assert.ok(seen[0].ssml, 'first attempt is SSML');
+        assert.ok(!seen[1].ssml, 'retry drops ssml');
+        assert.equal(seen[1].provider, 'aws-polly', 'still the Indian English voice');
+    });
+
+    it('falls back to another provider when Polly fails outright', async () => {
+        const seen = [];
+        const app = appWithTts(async (text, options) => {
+            seen.push(options);
+            if (options.provider === 'aws-polly') {
+                throw Object.assign(new Error('field_invalid'), { code: 'field_invalid' });
+            }
+            const audio = app.window.document.createElement('audio');
+            audio.src = 'data:audio/mp3;base64,OK';
+            return audio;
+        });
+
+        await app.send('hi');
+        await click(app);
+
+        const last = seen.at(-1);
+        assert.equal(last.provider, 'openai');
+        assert.match(last.instructions, /Speak/, 'style is prose for OpenAI, not SSML');
+    });
+
+    it('shows only one error when every route fails', async () => {
+        const app = appWithTts(async () => {
+            throw Object.assign(new Error('boom'), { code: 'upstream_failed' });
+        });
+
+        await app.send('hi');
+        await click(app);
+
+        const notices = app.$$('.sys-bubble').filter((n) => /Voice/.test(n.textContent));
+        assert.equal(notices.length, 1, 'one notice, not one per attempt');
+    });
+
+    it('caches the route that worked, so a replay costs nothing', async () => {
+        let calls = 0;
+        const app = appWithTts(async (text, options) => {
+            calls += 1;
+            if (options.ssml) throw Object.assign(new Error('bad_request'), { code: 'bad_request' });
+            const audio = app.window.document.createElement('audio');
+            audio.src = 'data:audio/mp3;base64,OK';
+            return audio;
+        });
+
+        await app.send('hi');
+        await click(app);
+        const afterFirst = calls;
+
+        app.$('.speak-btn').click();
+        await new Promise((r) => setTimeout(r, 80));
+
+        assert.equal(calls, afterFirst, 'replay must hit the cache');
+    });
+
+    it('still produces a voice note bubble when SSML fails', async () => {
+        const app = appWithTts(async (text, options) => {
+            if (options.ssml) throw Object.assign(new Error('bad_request'), { code: 'bad_request' });
+            const audio = app.window.document.createElement('audio');
+            audio.src = 'data:audio/mp3;base64,OK';
+            return audio;
+        });
+
+        await app.send('song sing karke voice note bhejo');
+        await new Promise((r) => setTimeout(r, 120));
+
+        assert.ok(app.$('.voice-note'), 'audio bubble rendered via fallback');
+    });
+});
+
+describe('singing persona', () => {
+    const promptOf = (spy) => spy.calls.chat[0].messages[0].content;
+
+    it('forbids claiming she cannot send audio', async () => {
+        const spy = spyPuter();
+        const app = boot(spy.factory);
+        await app.send('hi');
+
+        const prompt = promptOf(spy);
+        assert.match(prompt, /never say you cannot send audio/i);
+        assert.match(prompt, /breaks the app/i);
+    });
+
+    it('tells her the audio is sent automatically', async () => {
+        const spy = spyPuter();
+        const app = boot(spy.factory);
+        await app.send('hi');
+        assert.match(promptOf(spy), /The audio is sent automatically/);
+    });
+
+    it('forbids padding a half-remembered song with invented lines', async () => {
+        const spy = spyPuter();
+        const app = boot(spy.factory);
+        await app.send('hi');
+        assert.match(promptOf(spy), /Never pad a half-remembered song with invented lines/);
+    });
+});
+
+describe('image model', () => {
+    it('uses Seedream 5.0 Pro for face consistency', async () => {
+        const spy = spyPuter();
+        const app = boot(spy.factory);
+        await app.send('photo bhejo');
+
+        const { options } = spy.calls.txt2img[0].args;
+        assert.equal(options.provider, 'byteplus');
+        assert.match(options.model, /seedream-5-0-pro/);
+        assert.equal(options.quality, '1K', 'cheapest Pro tier');
+    });
+
+    it('retries the generic route when the model is rejected', async () => {
+        const attempts = [];
+        const app = boot((window) => ({
+            ai: {
+                chat: async () => ({ message: { content: 'x' } }),
+                txt2img: async (prompt, testMode, options) => {
+                    attempts.push(options);
+                    if (attempts.length === 1) {
+                        throw Object.assign(new Error('bad_request'), { code: 'bad_request' });
+                    }
+                    const img = window.document.createElement('img');
+                    img.src = 'data:image/png;base64,OK';
+                    return img;
+                }
+            }
+        }));
+
+        await app.send('photo bhejo');
+
+        assert.equal(attempts.length, 2, 'one fallback attempt');
+        assert.match(attempts[1].quality, /low/, 'fallback uses the generic route');
+        assert.ok(app.$('.chat-image'), 'photo still rendered');
+    });
+
+    it('composes a scene prompt without dropping the locked identity', async () => {
+        const spy = spyPuter();
+        const app = boot(spy.factory);
+        app.window.eval(`setIdentityImage('data:image/jpeg;base64,AAAA');`);
+        await app.send('photo bhejo mandir me');
+
+        const [{ prompt, args }] = spy.calls.txt2img;
+        assert.match(prompt, /long black hair/, 'identity words kept');
+        assert.match(prompt, /mandir me/, 'scene kept');
+        assert.equal(args.options.input_image, 'data:image/jpeg;base64,AAAA', 'reference kept');
     });
 });
 
@@ -515,7 +708,8 @@ describe('voice playback errors (reported bug)', () => {
 
         const transcript = app.document.getElementById('chat-container').textContent;
         assert.ok(!transcript.includes('alag tarike se likh ke bhejo'), 'chat wording must not appear');
-        assert.match(transcript, /Awaaz|awaaz/, 'voice-specific message expected');
+        // All three routes failed, so it must not pretend a retry will work.
+        assert.match(transcript, /Voice service abhi jawab nahi de rahi/, 'accurate outage copy expected');
     });
 
     it('reports a blocked autoplay as a tap-again problem', async () => {
