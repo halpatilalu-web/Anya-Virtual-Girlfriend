@@ -30,13 +30,50 @@ const CHAT_MODEL = 'gpt-5.4-nano';
 // change to the upstream default cannot silently raise what users are charged.
 const TEST_MODE = false;
 
-// Seedream 5.0 Pro (BytePlus) is the default now: it is the strongest model on
+// FREE image route. Pollinations' Classic API is documented as "Free, no
+// signup, rate-limited" — no account, no key, no card. That makes it the default
+// so nobody pays to use this app.
+//
+// The trade-offs are real and are surfaced in the UI, not hidden:
+//   - One image at a time, at least 45 seconds apart, per IP address.
+//   - Every image carries a small Pollinations logo in the corner.
+//   - One model, max 768x768, and no input-image support — so the locked face
+//     cannot be used here. A reference photo only works on the Puter route.
+//   - "Best effort": no uptime guarantee.
+const freeImageUrl = (prompt, seed) => {
+    const params = new URLSearchParams({
+        width: String(IMAGE_OPTIONS.width ?? 768),
+        height: String(IMAGE_OPTIONS.height ?? 768),
+        seed: String(seed),
+        model: 'flux',
+        // Ask anyway; the service is documented to keep its logo on free tier.
+        nologo: 'true',
+        // Never publish a private photo of her to the public feed.
+        private: 'true',
+        safe: 'true',
+        referrer: 'priya-girlfriend'
+    });
+
+    return `https://image.pollinations.ai/prompt/${encodeURIComponent(prompt)}?${params}`;
+};
+
+// Seconds to wait before the free slot opens again. The API answers 402 with a
+// Retry-After header; 45 s is the documented minimum gap.
+const FREE_IMAGE_COOLDOWN_MS = 45000;
+// How long to wait for the free endpoint before giving up on it. Generation
+// itself takes ~20 s, so this is not a short fuse.
+const FREE_IMAGE_TIMEOUT_MS = 90000;
+
+// Seedream 5.0 Pro (BytePlus) is the PAID fallback: it is the strongest model on
 // Puter for keeping one face recognisable across poses, outfits and lighting,
 // which is exactly what this app needs. It costs more than gpt-image-2, so the
 // settings below stay at the smallest tier that still gives a portrait:
 //   - `quality: '1K'` is the cheapest Seedream Pro tier ($0.045/image list).
 //   - 2K would double that for no visible gain in a 600px-wide chat bubble.
 // Switch to `gpt-image-2` (~$0.0059) if cost ever matters more than consistency.
+//
+// Only used when the free route is unavailable or the user has explicitly
+// switched to a paid model to get the locked face.
 const IMAGE_OPTIONS = {
     provider: 'byteplus',
     model: 'dola-seedream-5-0-pro-260628',
@@ -44,9 +81,8 @@ const IMAGE_OPTIONS = {
     ratio: { w: 3, h: 4 }
 };
 
-// Last-resort image route. If the configured model is unavailable (model
-// retired, provider excluded, tier rejected), one retry on the previous default
-// still gets him a photo instead of an error bubble.
+// Cheapest paid route. Used as a last resort when the free service refuses, and
+// as a clean retry if the chosen paid model/tier is rejected.
 const IMAGE_FALLBACK_OPTIONS = { width: 512, height: 768, quality: 'low' };
 
 const DEFAULT_NAME = 'Priya';
@@ -274,7 +310,18 @@ let lastSpoken = { text: '', spoken: '', url: '' };
 let currentAudio = null;
 let voiceEnabled = true;
 
+// 'free' | 'paid' — which image route to use. Declared here because the restored
+// value is applied just below; `let` has no hoisting and reading it earlier
+// throws a TDZ ReferenceError at boot.
+let imageRoute = 'free';
+
+// Last time the free endpoint produced an image. The free tier allows roughly
+// one image per 45 s per IP, so this is what stops us hammering a 402.
+let freeImageLastUsed = 0;
+
 let memory = loadMemory();
+// Route preference is stored with memory, so it survives a reload.
+imageRoute = memory.imageRoute === 'paid' ? 'paid' : 'free';
 // Captured before lastSeen is touched, so the greeting can react to the gap.
 const awayHours = hoursSince(memory.lastSeen);
 let idleTimer = null;
@@ -316,6 +363,7 @@ const identityClear = document.getElementById('identity-clear');
 const identityFile = document.getElementById('identity-file');
 const nameInput = document.getElementById('name-input');
 const nameSave = document.getElementById('name-save');
+const routeBtn = document.getElementById('route-btn');
 const nameMsg = document.getElementById('name-msg');
 const identityMsg = document.getElementById('identity-msg');
 
@@ -351,6 +399,7 @@ function defaultMemory() {
         // What she is called. `gName` because the storage key predates the
         // rename feature and old saves must keep loading.
         gName: DEFAULT_NAME,
+        imageRoute: 'free',
         // Face lock: a data URL the user picked from their own photos. Everything
         // else about a photo (pose, outfit, place) stays free-form.
         identityImage: null
@@ -406,7 +455,8 @@ function loadMemory() {
                 : DEFAULT_NAME,
             identityImage: typeof parsed.identityImage === 'string' && parsed.identityImage.startsWith('data:image/')
                 ? parsed.identityImage
-                : null
+                : null,
+            imageRoute: parsed.imageRoute === 'paid' ? 'paid' : 'free'
         };
     } catch {
         return base;
@@ -506,6 +556,7 @@ function renderHeaderMeta() {
         : 'Tap to see what she remembers';
 
     if (nameNode) nameNode.textContent = companionName();
+    renderRouteBadge();
     if (document) document.title = withName('Priya - Your Girlfriend');
     updateIdentityPreview();
 }
@@ -604,9 +655,19 @@ function updateIdentityPreview() {
     else identityPreview.removeAttribute('src');
 
     if (identityState) {
-        identityState.textContent = locked
-            ? `Face locked. Her photos will keep this face — only pose, outfit and place change.`
-            : 'No reference photo yet. Her face is described in words only, so it can drift between photos.';
+        if (locked && imageRoute === 'free') {
+            // Be blunt: the free model has no image-to-image, so a lock that
+            // silently did nothing would look like a bug.
+            identityState.textContent =
+                'Face locked, but the free model cannot use reference photos. ' +
+                'Switch to Photos: Paid to actually keep this face — or remove the lock to stay free.';
+        } else if (locked) {
+            identityState.textContent =
+                'Face locked. Her photos will keep this face — only pose, outfit and place change.';
+        } else {
+            identityState.textContent =
+                'No reference photo yet. Her face is described in words only, so it can drift between photos.';
+        }
     }
     if (identityClear) identityClear.hidden = !locked;
 }
@@ -908,6 +969,7 @@ sendBtn.addEventListener('click', handleMessage);
 clearBtn?.addEventListener('click', clearChat);
 voiceBtn?.addEventListener('click', () => setVoiceEnabled(!voiceEnabled));
 modeBtn?.addEventListener('click', cyclePhotoMode);
+routeBtn?.addEventListener('click', cycleImageRoute);
 memoryBtn?.addEventListener('click', () => toggleMemoryPanel());
 memoryClose?.addEventListener('click', () => toggleMemoryPanel(false));
 memoryForget?.addEventListener('click', () => {
@@ -957,8 +1019,13 @@ identityFile?.addEventListener('change', async () => {
     try {
         const dataUrl = await readIdentityFile(file);
         setIdentityImage(dataUrl);
+
+        // A locked face is useless on the free model, so do not pretend. Paid is
+        // the only route with image-to-image, so locking turns it on.
+        if (imageRoute === 'free') setImageRoute('paid');
+
         if (identityMsg) {
-            identityMsg.textContent = 'Ho gaya. Ab har photo me yahi face aayega. ❤️';
+            identityMsg.textContent = 'Ho gaya. Face wahi rahega, sirf pose aur kapde badlenge.';
             identityMsg.hidden = false;
         }
     } catch (error) {
@@ -1316,10 +1383,14 @@ function shouldSendSelfie() {
  * image, which is what actually anchors the face — text alone drifts.
  */
 function buildImagePrompt(sceneText, mode = photoMode, baseOptions = IMAGE_OPTIONS) {
+    // The free route has no image-to-image, so on that route the identity block
+    // in words is the only thing holding the face together.
+    const usingReference = memory.identityImage && usesReferenceImage();
+
     const scene = [
         PHOTO_STYLES[mode],
         sceneText,
-        memory.identityImage
+        usingReference
             ? 'same face and build as the reference photo, natural expression'
             : ''
     ].filter(Boolean).join(', ');
@@ -1327,7 +1398,7 @@ function buildImagePrompt(sceneText, mode = photoMode, baseOptions = IMAGE_OPTIO
     const prompt = [IMAGE_PROMPT_PREFIX, scene].filter(Boolean).join(', ');
 
     const options = { ...baseOptions };
-    if (memory.identityImage) {
+    if (usingReference) {
         options.input_image = memory.identityImage;
         options.input_image_mime_type = identityMimeType(memory.identityImage);
     }
@@ -1439,13 +1510,170 @@ async function sendImage(message) {
 }
 
 /**
- * One generation, with a single fallback route.
+ * Switch between the free and paid image routes.
  *
- * A `bad_request` here usually means the model or quality tier was rejected, not
- * that the prompt was — retrying the same prompt on the generic route is worth
- * one attempt before showing an error.
+ * Free is the default so the app costs nothing. Paid is the only route that can
+ * use the locked face reference, so locking a face while on free explains the
+ * trade instead of silently ignoring the lock.
+ */
+function setImageRoute(route, { silent = false } = {}) {
+    const next = route === 'paid' ? 'paid' : 'free';
+    const changed = next !== imageRoute;
+    imageRoute = next;
+    memory.imageRoute = next;
+    saveMemory();
+
+    if (typeof renderRouteBadge === 'function') renderRouteBadge();
+
+    if (!silent && changed && routeBtn) {
+        routeBtn.textContent = next === 'paid' ? 'Photos: Paid' : 'Photos: Free';
+        routeBtn.setAttribute('aria-pressed', String(next === 'paid'));
+        routeBtn.classList.toggle('is-on', next === 'paid');
+    }
+}
+
+function cycleImageRoute() {
+    setImageRoute(imageRoute === 'free' ? 'paid' : 'free');
+}
+
+/** Header pill: "Photos: Free" or "Photos: Paid". */
+function renderRouteBadge() {
+    if (!routeBtn) return;
+    routeBtn.textContent = imageRoute === 'paid' ? 'Photos: Paid' : 'Photos: Free';
+    routeBtn.setAttribute('aria-pressed', String(imageRoute === 'paid'));
+    routeBtn.classList.toggle('is-on', imageRoute === 'paid');
+    routeBtn.title = imageRoute === 'paid'
+        ? 'Paid model (Seedream) — keeps the locked face, costs about $0.045 per photo.'
+        : 'Free model (Pollinations) — no cost, no account. One photo at a time, ~45s apart, has a small logo, cannot use a locked face.';
+}
+
+/**
+ * Explain a free-tier refusal in terms of minutes, not error codes.
+ */
+function freeSlotNotice() {
+    const waitMs = Math.max(freeImageWaitMs(), FREE_IMAGE_COOLDOWN_MS);
+    const seconds = Math.ceil(waitMs / 1000);
+    return `Free photo service ek baar me ek photo deti hai — ${seconds} second ruk ke phir try karo.`;
+}
+
+/** Only the paid Puter route accepts an input image. The free one does not. */
+function usesReferenceImage() {
+    return imageRoute === 'paid';
+}
+
+/** Free route is impossible without a reference photo once one is locked. */
+function freeRouteBlockedByLock() {
+    return Boolean(memory.identityImage) && imageRoute === 'free';
+}
+
+/**
+ * Fetch one image from the free Pollinations endpoint.
+ *
+ * Returns an <img> element rather than a URL because that is what the rest of
+ * the render path expects, and because the browser keeps the bytes once loaded —
+ * which is how the save link works without downloading them ourselves.
+ *
+ * Rejects on a 402 rate-limit, a timeout, or a broken/placeholder response.
+ */
+/** The free route is a plain network image, so tests stub it instead of waiting. */
+function freeImageStub() {
+    return typeof window.__PRIYA_FREE_IMAGE__ === 'function' ? window.__PRIYA_FREE_IMAGE__ : null;
+}
+
+/**
+ * True when the free route can actually be used right now:
+ * chosen, no locked face (it has no image-to-image), and reachable — which in
+ * test mode means "stubbed", because jsdom has no network stack.
+ */
+function freeRouteUsable() {
+    if (imageRoute !== 'free' || memory.identityImage) return false;
+    if (window.__PRIYA_TEST__) return Boolean(freeImageStub());
+    return true;
+}
+
+function generateFreeImage(prompt) {
+    const stub = freeImageStub();
+    if (stub) {
+        // Stub gets the prompt and the real URL, so tests can assert on both.
+        return Promise.resolve(stub(prompt, freeImageUrl(prompt, 1)));
+    }
+
+    return new Promise((resolve, reject) => {
+        const seed = Math.floor(Math.random() * 1_000_000);
+        const img = document.createElement('img');
+
+        const timer = setTimeout(() => {
+            cleanup();
+            reject(Object.assign(new Error('Free image timed out'), { code: 'TimeoutError' }));
+        }, FREE_IMAGE_TIMEOUT_MS);
+
+        function cleanup() {
+            clearTimeout(timer);
+            img.onload = null;
+            img.onerror = null;
+        }
+
+        img.onload = () => {
+            cleanup();
+            // The endpoint serves an error *card* with a 200 in some cases; a real
+            // generation is never tiny.
+            if (!img.naturalWidth) {
+                reject(Object.assign(new Error('Empty free image'), { code: 'bad_request' }));
+                return;
+            }
+            resolve(img);
+        };
+
+        img.onerror = () => {
+            cleanup();
+            reject(
+                Object.assign(new Error('Free image failed'), {
+                    code: 'free_unavailable'
+                })
+            );
+        };
+
+        img.crossOrigin = 'anonymous';
+        img.src = freeImageUrl(prompt, seed);
+    });
+}
+
+/**
+ * Turn one prompt into an image, cheapest working route first.
+ *
+ * 1. Free Pollinations route, unless a reference photo is locked (it has no
+ *    image-to-image support) or free is blocked by its own cooldown.
+ * 2. The configured paid Puter model, when the user chose paid or has a lock.
+ * 3. The cheap generic Puter route, as a last resort.
+ *
+ * A `bad_request` in step 2/3 usually means the model or tier was rejected, not
+ * the prompt — retrying on the generic route is worth one attempt.
  */
 async function generateImage(prompt, options = IMAGE_OPTIONS) {
+    const wantFree = freeRouteUsable();
+
+    if (wantFree) {
+        const waitMs = freeImageWaitMs();
+        if (waitMs <= 0) {
+            try {
+                freeImageLastUsed = Date.now();
+                return await generateFreeImage(prompt);
+            } catch (error) {
+                console.error('[Priya] free image route failed', error);
+                // Fall through to the paid route rather than showing an error.
+            }
+        } else if (typeof puter === 'undefined' || !puter.ai?.txt2img) {
+            throw Object.assign(new Error('Free slot not ready'), {
+                code: 'free_cooldown',
+                retryAfterMs: waitMs
+            });
+        }
+    }
+
+    if (typeof puter === 'undefined' || !puter.ai?.txt2img) {
+        throw Object.assign(new Error('No image provider available'), { code: 'sdk_missing' });
+    }
+
     try {
         return await withTimeout(
             puter.ai.txt2img(prompt, TEST_MODE, options),
@@ -1458,6 +1686,12 @@ async function generateImage(prompt, options = IMAGE_OPTIONS) {
             IMAGE_TIMEOUT_MS
         );
     }
+}
+
+/** Milliseconds until the next free slot, or 0 when one is available now. */
+function freeImageWaitMs() {
+    if (!freeImageLastUsed) return 0;
+    return Math.max(0, freeImageLastUsed + FREE_IMAGE_COOLDOWN_MS - Date.now());
 }
 
 function appendImage(generated, mode = 'normal', captionText = null) {
@@ -1583,6 +1817,10 @@ function reportError(error, source = 'chat') {
         text = 'Tumhara AI credit khatam ho gaya hai. Puter dashboard me usage check karo, phir try karna.';
     } else if (/too_many_requests|429/.test(haystack)) {
         text = 'Thoda dheere jaan — ek-do second ruk ke phir bhejo.';
+    } else if (code === 'free_cooldown') {
+        text = freeSlotNotice();
+    } else if (code === 'free_unavailable' && imageRoute === 'free') {
+        text = 'Free photo service ne abhi jawab nahi diya. Thoda ruk ke try karo, ya header se Photos: Paid kar do.';
     } else if (/prompt_required|bad_request|400/.test(haystack)) {
         text = 'Yeh message samajh nahi aaya. Thoda alag tarike se likh ke bhejo.';
     } else {

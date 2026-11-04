@@ -295,7 +295,8 @@ Everything tunable lives at the top of `app.js`:
 | Constant | Purpose |
 | --- | --- |
 | `CHAT_MODEL` | Any model id from the [AI model directory](https://developer.puter.com/ai/models/). Defaults to `gpt-5.4-nano`. |
-| `IMAGE_OPTIONS` | Passed to `txt2img()`. Defaults to Seedream 5.0 Pro at 1K. Swap in `gpt-image-2` (~7x cheaper) or `flux-schnell` to save money. |
+| `freeImageUrl()` | Builds the free Pollinations request. `FREE_IMAGE_COOLDOWN_MS` (45 s) and `FREE_IMAGE_TIMEOUT_MS` live next to it. |
+| `IMAGE_OPTIONS` | Paid route only. Seedream 5.0 Pro at 1K. Swap in `gpt-image-2` (~7x cheaper) or `flux-schnell` to cut the bill. |
 | `IMAGE_FALLBACK_OPTIONS` | One retry route if the configured model or tier is rejected. |
 | `IMAGE_PROMPT_PREFIX` | The fixed identity description prepended to every photo prompt. Built from `IDENTITY_LOOK`. |
 | `IDENTITY_LOOK` | The words that describe her face. Change these to change how she looks when no reference photo is locked. |
@@ -320,6 +321,30 @@ full quota degrade to "no persistence" instead of breaking the chat.
   get less. The UI disables input while a request is in flight to stay well under it.
 - History is capped at the last 5 exchanges (`MAX_HISTORY_TURNS`).
 
+### Free images (default)
+
+The app ships **free by default**. Nothing is charged, no account is needed and
+no card is asked for: [Pollinations' Classic
+API](https://github.com/pollinations/pollinations/blob/master/APIDOCS.md) is
+documented as *"Free · no signup · rate-limited"* and takes the prompt in the URL.
+
+The trade-offs are real, so the UI states them instead of hiding them:
+
+| Limit | What it means here |
+| --- | --- |
+| One image at a time, **≥45 s apart per IP** | A second request gets `402`. `freeImageWaitMs()` respects the cooldown, and the message says how many seconds to wait |
+| One model, max **768×768** | Fine for a chat bubble; not for a wallpaper |
+| Small **Pollinations logo** on every image | `nologo=true` is sent, but the docs say the logo stays on the free tier |
+| **No input images** | The locked face **cannot** be used. That is why locking a face flips the app to `Photos: Paid` rather than silently ignoring the lock |
+| Best effort | No uptime guarantee, so a failure falls through to the paid route |
+
+`private=true` is sent on every request: by default this endpoint can publish
+generated images to a public feed, and a private photo of her should never end up
+there.
+
+The header **Photos: Free / Paid** pill switches routes. Free is the default; Paid
+is only needed for the locked face (or if you simply want Seedream's quality).
+
 ### Image cost
 
 **There is no free image model on Puter.** Every generation is billed to the
@@ -328,13 +353,14 @@ free allowance goes furthest; images are the expensive part.
 
 | Model | Approx. cost / image | Notes |
 | --- | --- | --- |
-| `dola-seedream-5-0-pro` via BytePlus (**default**) | ~$0.045 at 1K, ~$0.09 at 2K | Best face consistency across poses and outfits — the reason it is the default. 2K only doubles the bill |
+| `dola-seedream-5-0-pro` via BytePlus (**paid route**) | ~$0.045 at 1K, ~$0.09 at 2K | Best face consistency. The only route that accepts a reference photo |
 | `gpt-image-2` | ~$0.0059 | ~7x cheaper, noticeably looser at keeping one face |
 | `black-forest-labs/flux-schnell` | ~$0.003 | Cloudflare route always returns `1024x1024`, so the portrait framing is lost |
 
-The trade is deliberate: **Seedream costs ~7x more per photo than `gpt-image-2`,
-and it is what makes the locked face hold.** If cost matters more than
-consistency, switch `IMAGE_OPTIONS` back to `{ width: 512, height: 768, quality: 'low' }`.
+The default route is the **free Pollinations endpoint, which costs nothing**.
+Seedream is opt-in (`Photos: Paid`) because it costs ~7x more than `gpt-image-2`
+and is the only route that makes a locked face hold. If you never lock a face,
+you never pay anything.
 
 `quality: '1K'` is pinned in `IMAGE_OPTIONS` (Pro's cheapest tier) along with an
 explicit `provider` and `model`, and a test enforces all three — an upstream
