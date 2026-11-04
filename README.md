@@ -106,6 +106,20 @@ Every reply carries a small ❤️ 😂 🥺 row. Picking one stores it in memor
 next turn's prompt tells her about it, so she notices. A second choice replaces
 the first rather than accumulating — it is a reaction, not a tally.
 
+### A CSS gotcha worth knowing
+
+`index.html` declares `[hidden] { display: none !important; }` in the author
+stylesheet. That rule is **not optional**.
+
+The browser's own `[hidden] { display: none }` has lower precedence than *any*
+author rule that sets `display`. `.onboarding` sets `display: flex`, so with only
+the UA rule the overlay stayed on screen forever — clicking **Skip** set the
+attribute correctly but changed nothing visually, and the app was unusable past
+the first screen.
+
+jsdom cannot compute this cascade, so the regression tests assert on the CSS text
+directly (rule exists, and it carries `!important`).
+
 ### Streaming
 
 `chat(..., { stream: true })` returns an async iterable of chunks. Only
@@ -233,7 +247,7 @@ to configure.
 ```bash
 npm install        # dev-only: jsdom + css-tree for the test suite
 npm run check      # CSS lint + full test suite
-npm test           # 110 tests: intent detection, chat, images, XSS, errors, persistence, server
+npm test           # 115 tests: intent detection, chat, images, XSS, errors, persistence, server
 npm run lint       # validates every CSS declaration in index.html
 ```
 
