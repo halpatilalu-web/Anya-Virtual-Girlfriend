@@ -30,7 +30,24 @@ const CHAT_MODEL = 'gpt-5.4-nano';
 // change to the upstream default cannot silently raise what users are charged.
 const TEST_MODE = false;
 
-const IMAGE_OPTIONS = { width: 512, height: 768, quality: 'low' };
+// Seedream 5.0 Pro (BytePlus) is the default now: it is the strongest model on
+// Puter for keeping one face recognisable across poses, outfits and lighting,
+// which is exactly what this app needs. It costs more than gpt-image-2, so the
+// settings below stay at the smallest tier that still gives a portrait:
+//   - `quality: '1K'` is the cheapest Seedream Pro tier ($0.045/image list).
+//   - 2K would double that for no visible gain in a 600px-wide chat bubble.
+// Switch to `gpt-image-2` (~$0.0059) if cost ever matters more than consistency.
+const IMAGE_OPTIONS = {
+    provider: 'byteplus',
+    model: 'dola-seedream-5-0-pro-260628',
+    quality: '1K',
+    ratio: { w: 3, h: 4 }
+};
+
+// Last-resort image route. If the configured model is unavailable (model
+// retired, provider excluded, tier rejected), one retry on the previous default
+// still gets him a photo instead of an error bubble.
+const IMAGE_FALLBACK_OPTIONS = { width: 512, height: 768, quality: 'low' };
 
 const DEFAULT_NAME = 'Priya';
 const MAX_NAME_LENGTH = 24;
@@ -113,7 +130,18 @@ const SYSTEM_PROMPT_TEMPLATE = [
     '- Then add one warm line in your own voice, not a summary.',
     '- If you do not remember the exact words of a song, say so plainly and offer',
     '  what you do remember. Never invent a famous verse and present it as exact.',
-    '- Do not claim to be a recording. You are reciting from memory.',
+    '- Never pad a half-remembered song with invented lines. Two real lines are',
+    '  better than two real lines plus six made-up ones.',
+    '- Do not claim to be a recording. You are singing from memory.',
+
+    'On audio — this matters, so read it twice:',
+    '- The app sings for you. Everything you write is spoken aloud, and when he',
+    '  asks for a voice note he gets a real audio clip of your reply.',
+    '- So never say you cannot send audio, cannot send a voice note, cannot',
+    '  record, or that you are "just text". That is false and it breaks the app.',
+    '- If he asks for a song as a voice note: write the lines in "...", add one',
+    '  short warm line, and stop. The audio is sent automatically.',
+    '- When he flirts inside a song line, flirt back inside your next line.',
 ].join(' ');
 
 // Taught to the model so she can persist things between visits. The markers are
@@ -141,6 +169,24 @@ const VOICE_OPTIONS = {
     language: 'en-IN',
     voice: 'Kajal',
     engine: 'neural'
+};
+
+// Fallback voice. Polly's SSML path is the nice one but it is also the most
+// fragile: a `bad_request` from the SSML wrapper used to kill the whole
+// utterance. When that happens we retry with a plain-text provider that takes
+// natural-language style instructions instead of markup, so he still gets audio.
+const FALLBACK_VOICE_OPTIONS = {
+    provider: 'openai',
+    model: 'gpt-4o-mini-tts',
+    voice: 'nova'
+};
+
+// Per-provider style instruction for the fallback voice. OpenAI's `instructions`
+// is prose, not XML, so the tone is described rather than marked up.
+const FALLBACK_TONE_INSTRUCTIONS = {
+    tender: 'Speak softly and warmly, a little slow, like someone who cares about the listener.',
+    excited: 'Speak brightly and energetically, with quick light pacing.',
+    neutral: 'Speak naturally and warmly, like a close friend talking.'
 };
 
 // Polly has no style parameter, but it speaks SSML, so tone is applied as
@@ -238,6 +284,12 @@ let turnsSinceSelfie = SELFIE_COOLDOWN_TURNS;
 
 // Set once the user asks for audio, so the next reply arrives as a voice note.
 let voiceNoteRequested = false;
+
+// Voice failures are reported in the chat, so the same outage must not print the
+// same line once per bubble plus once per retry. One notice per minute is enough
+// to tell him it is broken without burying the conversation.
+const VOICE_NOTICE_COOLDOWN_MS = 60000;
+let lastVoiceNotice = { text: '', at: 0 };
 
 const inputField = document.getElementById('user-input');
 const sendBtn = document.getElementById('send-btn');
@@ -974,7 +1026,7 @@ async function handleMessage() {
     const wantsImage = IMAGE_NOUN_RE.test(message);
     const asksForVoice = VOICE_NOTE_RE.test(message);
     if (asksForVoice) voiceNoteRequested = true;
-    const loadingDiv = appendLoading(withName(wantsImage ? 'Priya ek photo bana rahi hai...' : 'Priya is typing...'));
+    const loadingDiv = appendLoading(withName('Priya is typing...'));
 
     setBusy(true);
     scheduleIdleNudge();
@@ -1086,6 +1138,60 @@ async function sendChat(message, loadingDiv = null) {
 }
 
 /**
+ * Synthesise speech, degrading gracefully instead of failing the whole feature.
+ *
+ * Chain: Polly + SSML (best prosody) -> Polly plain text (no markup to reject)
+ * -> OpenAI voice with prose style instructions (different provider entirely,
+ * so a Polly-side outage is survivable). Each step is only tried when the
+ * previous one failed; the first working clip wins.
+ *
+ * Returns `{ url, spoken }`. Throws only when every route failed.
+ */
+async function synthesiseSpeech(text, tone, { verseLines = 0 } = {}) {
+    const attempts = [];
+
+    if (EXPRESSIVE_VOICE) {
+        const ssml = verseLines > 0
+            ? buildVoiceNoteSpeech(text, tone, verseLines)
+            : buildSsml(text, tone);
+        attempts.push({ spoken: ssml, options: { ...VOICE_OPTIONS, ssml: true } });
+    }
+
+    // Plain text is the same provider without the part that gets rejected.
+    attempts.push({ spoken: String(text).slice(0, VOICE_NOTE_MAX_CHARS), options: { ...VOICE_OPTIONS } });
+
+    // Different provider: survives a Polly outage, loses the en-IN accent.
+    attempts.push({
+        spoken: String(text).slice(0, VOICE_NOTE_MAX_CHARS),
+        options: {
+            ...FALLBACK_VOICE_OPTIONS,
+            instructions: FALLBACK_TONE_INSTRUCTIONS[tone] ?? FALLBACK_TONE_INSTRUCTIONS.neutral
+        }
+    });
+
+    let lastError = null;
+
+    for (const attempt of attempts) {
+        try {
+            const audio = await withTimeout(
+                puter.ai.txt2speech(attempt.spoken, attempt.options),
+                VOICE_TIMEOUT_MS
+            );
+
+            const url = audio?.src ?? '';
+            if (!url) throw new Error('No audio returned');
+
+            return { url, spoken: attempt.spoken };
+        } catch (error) {
+            lastError = error;
+            console.error('[Priya voice] attempt failed', attempt.options.provider, error);
+        }
+    }
+
+    throw lastError ?? new Error('Voice failed');
+}
+
+/**
  * Render the reply itself as an audio bubble the user can play.
  *
  * Deliberately separate from speak(): that one auto-plays and caches a single
@@ -1095,17 +1201,10 @@ async function sendChat(message, loadingDiv = null) {
 async function sendVoiceNote(text) {
     const tone = detectTone(text);
     const lines = countVerseLines(text);
-    const spoken = buildVoiceNoteSpeech(text, tone, lines);
 
     try {
-        const audio = await withTimeout(
-            puter.ai.txt2speech(spoken, { ...VOICE_OPTIONS, ssml: true }),
-            VOICE_TIMEOUT_MS
-        );
-
-        const src = audio?.src ?? '';
-        if (!src) throw new Error('No audio returned');
-        appendVoiceNote(src, text, tone);
+        const { url } = await synthesiseSpeech(text, tone, { verseLines: lines });
+        appendVoiceNote(url, text, tone);
     } catch (error) {
         // A failed voice note should not swallow the reply: the text bubble is
         // already on screen, so report quietly and move on.
@@ -1216,7 +1315,7 @@ function shouldSendSelfie() {
  * mood. When the user has given a reference photo it is attached as an input
  * image, which is what actually anchors the face — text alone drifts.
  */
-function buildImagePrompt(sceneText, mode = photoMode) {
+function buildImagePrompt(sceneText, mode = photoMode, baseOptions = IMAGE_OPTIONS) {
     const scene = [
         PHOTO_STYLES[mode],
         sceneText,
@@ -1227,7 +1326,7 @@ function buildImagePrompt(sceneText, mode = photoMode) {
 
     const prompt = [IMAGE_PROMPT_PREFIX, scene].filter(Boolean).join(', ');
 
-    const options = { ...IMAGE_OPTIONS };
+    const options = { ...baseOptions };
     if (memory.identityImage) {
         options.input_image = memory.identityImage;
         options.input_image_mime_type = identityMimeType(memory.identityImage);
@@ -1249,10 +1348,7 @@ function identityMimeType(dataUrl) {
 async function sendSelfie(contextText) {
     try {
         const { prompt, options } = buildImagePrompt(contextText);
-        const generated = await withTimeout(
-            puter.ai.txt2img(prompt, TEST_MODE, options),
-            IMAGE_TIMEOUT_MS
-        );
+        const generated = await generateImage(prompt, options);
         appendImage(generated, photoMode, withName('Priya sent a photo:'));
     } catch (error) {
         console.error('[Priya] selfie failed', error);
@@ -1338,12 +1434,30 @@ async function sendImage(message) {
     //
     // txt2img() has no documented abort support, so race it against a timer to
     // stop the spinner running forever. The upstream request may still finish.
-    const generated = await withTimeout(
-        puter.ai.txt2img(prompt, TEST_MODE, options),
-        IMAGE_TIMEOUT_MS
-    );
-
+    const generated = await generateImage(prompt, options);
     appendImage(generated, photoMode);
+}
+
+/**
+ * One generation, with a single fallback route.
+ *
+ * A `bad_request` here usually means the model or quality tier was rejected, not
+ * that the prompt was — retrying the same prompt on the generic route is worth
+ * one attempt before showing an error.
+ */
+async function generateImage(prompt, options = IMAGE_OPTIONS) {
+    try {
+        return await withTimeout(
+            puter.ai.txt2img(prompt, TEST_MODE, options),
+            IMAGE_TIMEOUT_MS
+        );
+    } catch (error) {
+        console.error('[Priya] image failed on primary route', options.model ?? 'default', error);
+        return withTimeout(
+            puter.ai.txt2img(prompt, TEST_MODE, { ...IMAGE_FALLBACK_OPTIONS }),
+            IMAGE_TIMEOUT_MS
+        );
+    }
 }
 
 function appendImage(generated, mode = 'normal', captionText = null) {
@@ -1438,15 +1552,24 @@ function reportError(error, source = 'chat') {
             voiceText = 'Browser ne awaaz rok di — ek baar screen pe tap karke phir ▶ dabao.';
         } else if (code === 'input_too_large' || /input_too_large|3000/.test(haystack)) {
             voiceText = 'Ye bahut lamba hai bolne ke liye. Chhota hissa sunao.';
-        } else if (/field_invalid|bad_request|400/.test(haystack)) {
-            voiceText = 'Awaaz set nahi ho payi. Ek baar phir ▶ dabao.';
         } else if (/insufficient_funds|402/.test(haystack)) {
-            voiceText = 'Awaaz ke credits khatam ho gaye hain.';
+            voiceText = 'Awaaz ke credits khatam ho gaye hain. Puter dashboard me usage check karo.';
+        } else if (/autoplay|notallowed/i.test(haystack)) {
+            voiceText = 'Browser ne awaaz rok di — ek baar screen pe tap karke phir ▶ dabao.';
+        } else if (/410|403|excluded|data.?policy/i.test(haystack)) {
+            voiceText = 'Voice service ne request rok di. Doosri awaaz try kar rahi hu — ek baar phir ▶ dabao.';
         } else {
-            voiceText = 'Awaaz nahi chal payi. Ek baar phir ▶ dabao.';
+            // Every retry route failed too, so this is a real outage rather than
+            // a malformed request. Saying "press play again" here was a lie.
+            voiceText = 'Voice service abhi jawab nahi de rahi. Thodi der baad phir ▶ dabao.';
         }
 
-        appendMessage(voiceText, 'system');
+        const now = Date.now();
+        const repeat = lastVoiceNotice.text === voiceText &&
+            now - lastVoiceNotice.at < VOICE_NOTICE_COOLDOWN_MS;
+        lastVoiceNotice = { text: voiceText, at: now };
+
+        if (!repeat) appendMessage(voiceText, 'system');
         console.error('[Priya voice]', error);
         return;
     }
@@ -1549,19 +1672,12 @@ async function speak(text, anchor) {
             stopAudio();
             anchor?.classList.add('is-loading');
             const tone = detectTone(text);
-            const options = EXPRESSIVE_VOICE
-                ? { ...VOICE_OPTIONS, ssml: true }
-                : VOICE_OPTIONS;
-            const spoken = EXPRESSIVE_VOICE ? buildSsml(text, tone) : text;
 
-            audio = await withTimeout(
-                puter.ai.txt2speech(spoken, options),
-                VOICE_TIMEOUT_MS
-            );
-
-            const src = audio?.src ?? '';
-            if (!src) throw new Error('No audio returned');
-            lastSpoken = { text, spoken, url: src };
+            // Cache the URL that actually worked, whichever route produced it —
+            // so a replay is free even when the SSML attempt had to be skipped.
+            const { url, spoken } = await synthesiseSpeech(text, tone);
+            lastSpoken = { text, spoken, url };
+            audio = new Audio(url);
         }
 
         stopAudio();

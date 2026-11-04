@@ -131,8 +131,9 @@ the photos stop looking like the same person.
 Limits worth knowing:
 
 - **Provider-dependent.** `input_image` is documented for every Puter image
-  provider, but *how closely* a model follows a reference varies. `gpt-image-2`
-  (the default) supports it; text-to-image-only models reject references.
+  provider, but *how closely* a model follows a reference varies — which is
+  exactly why Seedream 5.0 Pro is the default. Text-to-image-only models reject
+  references outright.
 - **Storage is per browser.** The reference lives in `localStorage`, so it is not
   synced across devices and "Forget all" is the only wipe.
 - **A Drive folder cannot be read by the app.** Google Drive needs OAuth and a
@@ -194,6 +195,31 @@ every failure — including a blocked autoplay — was reported with the chat co
 understood the message at all. Voice failures now say what actually went wrong
 (blocked playback, service down, text too long) and the replay cache stores the
 exact string that was sent, SSML included, so a replay reuses the same clip.
+
+### Voice fallback chain
+
+Pressing play used to end at *"Awaaz set nahi ho payi"* whenever the SSML request
+was rejected, because there was exactly one route to audio and no retry.
+
+`synthesiseSpeech()` now tries up to three routes in order and returns the first
+clip that comes back:
+
+| Route | Why | Trade |
+| --- | --- | --- |
+| Polly + SSML | Best prosody — tone, pitch, verse breaks | Most fragile; a `bad_request` here used to kill the feature |
+| Polly, plain text | Same Indian English voice, nothing for the markup layer to reject | Loses tone shaping |
+| OpenAI `gpt-4o-mini-tts`, `instructions` | Different provider entirely, so a Polly outage is survivable | Loses the `en-IN` accent |
+
+The URL that actually worked is what gets cached, so a replay is free even when
+the SSML attempt had to be skipped. Failures are logged per attempt and reported
+once — a repeated outage no longer prints the same line on every bubble *and*
+every retry.
+
+The persona also had to be corrected. She was telling users *"main voice note
+actually send nahi kar sakti"* — which is false, and which makes the app look
+broken from the inside. The prompt now states that everything she writes is
+spoken aloud, that a voice note is sent automatically, and that claiming
+otherwise breaks the app.
 
 ### Reactions
 
@@ -269,7 +295,8 @@ Everything tunable lives at the top of `app.js`:
 | Constant | Purpose |
 | --- | --- |
 | `CHAT_MODEL` | Any model id from the [AI model directory](https://developer.puter.com/ai/models/). Defaults to `gpt-5.4-nano`. |
-| `IMAGE_OPTIONS` | Passed to `txt2img()`. Add `model: 'black-forest-labs/flux-schnell'` for a much cheaper image. |
+| `IMAGE_OPTIONS` | Passed to `txt2img()`. Defaults to Seedream 5.0 Pro at 1K. Swap in `gpt-image-2` (~7x cheaper) or `flux-schnell` to save money. |
+| `IMAGE_FALLBACK_OPTIONS` | One retry route if the configured model or tier is rejected. |
 | `IMAGE_PROMPT_PREFIX` | The fixed identity description prepended to every photo prompt. Built from `IDENTITY_LOOK`. |
 | `IDENTITY_LOOK` | The words that describe her face. Change these to change how she looks when no reference photo is locked. |
 | `SYSTEM_PROMPT_TEMPLATE` | Her persona and language instructions. `${NAME}` is replaced with the chosen name per turn. |
@@ -301,12 +328,19 @@ free allowance goes furthest; images are the expensive part.
 
 | Model | Approx. cost / image | Notes |
 | --- | --- | --- |
-| `gpt-image-2` (default) | ~$0.0059 | Cheapest option measured; keeps `512x768` framing |
+| `dola-seedream-5-0-pro` via BytePlus (**default**) | ~$0.045 at 1K, ~$0.09 at 2K | Best face consistency across poses and outfits — the reason it is the default. 2K only doubles the bill |
+| `gpt-image-2` | ~$0.0059 | ~7x cheaper, noticeably looser at keeping one face |
 | `black-forest-labs/flux-schnell` | ~$0.003 | Cloudflare route always returns `1024x1024`, so the portrait framing is lost |
 
-`quality: 'low'` is pinned in `IMAGE_OPTIONS`. It is already `gpt-image-2`'s
-default, but pinning it means a change to the upstream default cannot silently
-raise what users are charged. A test enforces the pin.
+The trade is deliberate: **Seedream costs ~7x more per photo than `gpt-image-2`,
+and it is what makes the locked face hold.** If cost matters more than
+consistency, switch `IMAGE_OPTIONS` back to `{ width: 512, height: 768, quality: 'low' }`.
+
+`quality: '1K'` is pinned in `IMAGE_OPTIONS` (Pro's cheapest tier) along with an
+explicit `provider` and `model`, and a test enforces all three — an upstream
+default change cannot silently move the price to 2K or to a different model.
+`IMAGE_FALLBACK_OPTIONS` gives one retry on the generic route if the model or
+tier is rejected, so a retired model still returns a photo.
 
 For development, flip `TEST_MODE` in `app.js` to `true`. It calls
 `txt2img(prompt, true)`, which returns a sample image and **charges nothing** —
