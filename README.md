@@ -75,8 +75,36 @@ full quota degrade to "no persistence" instead of breaking chat.
 | Mood | A persistent mood (`warm`, `happy`, `missing`, `sulky`) she can change herself |
 | Idle nudge | After 20 minutes of silence she sends one message — once per idle period, never while a request is in flight or the tab is hidden |
 | Typing delay | Replies are held 0.5–2.5s based on length, so they land at a human pace (skipped when streaming) |
-| Streaming | Tokens are painted as they arrive, so a reply starts appearing almost immediately |
+| Streaming | Tokens are painted as they arrive with a blinking caret; the typing spinner disappears on the first chunk |
 | Spontaneous selfies | She sometimes sends a photo unprompted, driven by a `[[selfie]]` marker |
+
+### Expressive voice
+
+Replies are not read in one flat tone. `detectTone()` reads the reply's own shape
+— emoji and exclamation marks lean **excited**, ellipses and sad emoji lean
+**tender** — and the text is wrapped in SSML so Polly speaks it at a matching
+pace and pitch:
+
+```xml
+<speak><prosody rate="92%" pitch="-2%">Tumhari yaad aa rahi thi…</prosody></speak>
+```
+
+Two details matter:
+
+- **Polly is kept on purpose.** OpenAI's TTS has an `instructions` parameter that
+  would be more expressive, but it has no `en-IN` voice, and the Indian English
+  locale is what makes Hinglish sound right. Tone control was worth less than
+  the accent. `EXPRESSIVE_VOICE = false` falls back to plain text.
+- **Text is XML-escaped.** A stray `&` or `<` in a reply would otherwise produce
+  invalid SSML and fail the whole utterance.
+
+Tone detection is local string matching, so it costs nothing extra.
+
+### Reactions
+
+Every reply carries a small ❤️ 😂 🥺 row. Picking one stores it in memory and the
+next turn's prompt tells her about it, so she notices. A second choice replaces
+the first rather than accumulating — it is a reaction, not a tally.
 
 ### Streaming
 
@@ -205,7 +233,7 @@ to configure.
 ```bash
 npm install        # dev-only: jsdom + css-tree for the test suite
 npm run check      # CSS lint + full test suite
-npm test           # 98 tests: intent detection, chat, images, XSS, errors, persistence, server
+npm test           # 110 tests: intent detection, chat, images, XSS, errors, persistence, server
 npm run lint       # validates every CSS declaration in index.html
 ```
 

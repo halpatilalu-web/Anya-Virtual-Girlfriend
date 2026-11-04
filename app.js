@@ -104,6 +104,23 @@ const VOICE_OPTIONS = {
     engine: 'neural'
 };
 
+// Polly has no style parameter, but it speaks SSML, so tone is applied as
+// prosody — slower and softer for tender replies, brisker for excited ones.
+// Keeping Polly (rather than an OpenAI voice with `instructions`) is deliberate:
+// the en-IN locale is what makes Hinglish sound right, and that matters more
+// than richer style control. Set to false to send plain text instead.
+const EXPRESSIVE_VOICE = true;
+
+// How each detected tone is spoken.
+const TONE_PROSODY = {
+    tender: { rate: '92%', pitch: '-2%', break: '350ms' },
+    excited: { rate: '108%', pitch: '+3%', break: '180ms' },
+    neutral: { rate: '100%', pitch: '0%', break: '250ms' }
+};
+
+// Reactions he can leave on a reply. She notices them.
+const REACTIONS = ['\u2764\uFE0F', '\u{1F602}', '\u{1F97A}'];
+
 // Photo styles. Both are ordinary, non-explicit portraits; the difference is
 // styling, not content.
 const PHOTO_STYLES = {
@@ -208,7 +225,7 @@ scheduleIdleNudge();
 // ---------------------------------------------------------------------------
 
 function defaultMemory() {
-    return { name: '', facts: [], firstSeen: null, lastSeen: null, mood: 'warm', visits: 0 };
+    return { name: '', facts: [], firstSeen: null, lastSeen: null, mood: 'warm', visits: 0, lastReaction: null };
 }
 
 function getLocalStore() {
@@ -236,7 +253,8 @@ function loadMemory() {
             firstSeen: Number.isFinite(parsed.firstSeen) ? parsed.firstSeen : null,
             lastSeen: Number.isFinite(parsed.lastSeen) ? parsed.lastSeen : null,
             mood: MOODS.includes(parsed.mood) ? parsed.mood : 'warm',
-            visits: Number.isFinite(parsed.visits) ? parsed.visits : 0
+            visits: Number.isFinite(parsed.visits) ? parsed.visits : 0,
+            lastReaction: typeof parsed.lastReaction === 'string' ? parsed.lastReaction : null
         };
     } catch {
         return base;
@@ -393,6 +411,13 @@ function buildSystemPrompt() {
 
     const days = daysTogether();
     if (days > 1) context.push(`You two have been together for ${days} days.`);
+
+    if (memory.lastReaction) {
+        context.push(
+            `He reacted to your last message with ${memory.lastReaction}. ` +
+            'Notice it naturally, the way you would in person.'
+        );
+    }
 
     if (Number.isFinite(awayHours) && awayHours >= AWAY_HOURS_BEFORE_GREETING) {
         const gap = awayHours >= 24
@@ -640,7 +665,7 @@ async function handleMessage() {
         if (wantsImage) {
             await sendImage(message);
         } else {
-            await sendChat(message);
+            await sendChat(message, loadingDiv);
         }
         memory.lastSeen = Date.now();
         saveMemory();
@@ -664,7 +689,7 @@ function setBusy(busy) {
 // Text
 // ---------------------------------------------------------------------------
 
-async function sendChat(message) {
+async function sendChat(message, loadingDiv = null) {
     const messages = [{ role: 'system', content: buildSystemPrompt() }];
 
     for (const turn of chatHistory) {
@@ -683,6 +708,8 @@ async function sendChat(message) {
         if (STREAMING) {
             bubble = beginStream();
             raw = await streamReply(messages, controller, bubble);
+            // The bubble is on screen and painting now, so the spinner is a lie.
+            removeLoading(loadingDiv);
         }
 
         // Fall back to a single request when streaming is off, unsupported, or
@@ -764,6 +791,7 @@ async function streamReply(messages, controller, bubble) {
 
             buffer += chunk.text;
             bubble.render(buffer);
+            bubble.reveal?.();
         }
     } catch (error) {
         // A partial reply is better than none, but never throw away a complete one.
@@ -802,7 +830,7 @@ async function sendSelfie(contextText) {
  */
 function beginStream() {
     const div = document.createElement('div');
-    div.className = 'bubble bot-bubble';
+    div.className = 'bubble bot-bubble is-streaming';
 
     const p = document.createElement('p');
     p.className = 'bubble-text';
@@ -818,8 +846,10 @@ function beginStream() {
             scrollToBottom();
         },
         finish(finalText) {
+            div.classList.remove('is-streaming');
             p.textContent = finalText;
             div.appendChild(buildSpeakButton(finalText));
+            div.appendChild(buildReactionBar());
             if (voiceEnabled) speak(finalText);
             scrollToBottom();
         },
@@ -972,6 +1002,50 @@ function withTimeout(promise, ms) {
  * costs the same monthly allowance as everything else, so the resulting URL is
  * cached for the most recent reply — replaying it is free.
  */
+/**
+ * Guess how a reply should sound from its own shape — no extra model call, so
+ * it costs nothing. Emoji and exclamation marks lean excited; ellipses, ellipsis
+ * dots and sad emoji lean tender.
+ */
+function detectTone(text) {
+    const value = String(text ?? '');
+    if (!value) return 'neutral';
+
+    const excited = (value.match(/[!\u{1F60D}\u{1F60A}\u{1F389}\u{1F525}]/gu) || []).length;
+    const tender = (value.match(/[\.\u2026\u{1F97A}\u{1F614}\u2764]/gu) || []).length;
+
+    if (excited > tender) return 'excited';
+    if (tender > 0 && tender >= excited) return 'tender';
+    return 'neutral';
+}
+
+function escapeXml(value) {
+    return value
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;');
+}
+
+/**
+ * Wrap a reply in SSML so Polly can vary pace and pitch. Sentence ends get a
+ * short break, which is what makes the speech stop sounding like one long run-on.
+ */
+function buildSsml(text, tone) {
+    const prosody = TONE_PROSODY[tone] ?? TONE_PROSODY.neutral;
+    const body = escapeXml(text)
+        .split(/(?<=[.!?\u0964])\s+/)
+        .filter(Boolean)
+        .join(`<break time="${prosody.break}"/>`);
+
+    return [
+        '<speak>',
+        `<prosody rate="${prosody.rate}" pitch="${prosody.pitch}">`,
+        body,
+        '</prosody>',
+        '</speak>'
+    ].join('');
+}
+
 async function speak(text, anchor) {
     if (!text) return;
     if (typeof puter === 'undefined' || !puter.ai?.txt2speech) {
@@ -986,7 +1060,17 @@ async function speak(text, anchor) {
         } else {
             stopAudio();
             anchor?.classList.add('is-loading');
-            audio = await withTimeout(puter.ai.txt2speech(text, VOICE_OPTIONS), VOICE_TIMEOUT_MS);
+            const tone = detectTone(text);
+            const options = EXPRESSIVE_VOICE
+                ? { ...VOICE_OPTIONS, ssml: true }
+                : VOICE_OPTIONS;
+            const spoken = EXPRESSIVE_VOICE ? buildSsml(text, tone) : text;
+
+            // Cache by the original text; tone is derived, not stored.
+            audio = await withTimeout(
+                puter.ai.txt2speech(spoken, options),
+                VOICE_TIMEOUT_MS
+            );
 
             const src = audio?.src ?? '';
             if (!src) throw new Error('No audio returned');
@@ -1055,9 +1139,10 @@ function appendMessage(text, sender, { silent = false } = {}) {
 
     msgDiv.appendChild(p);
 
-    // Every reply can be replayed aloud.
+    // Every reply can be replayed aloud and reacted to.
     if (sender === 'bot' && !silent) {
         msgDiv.appendChild(buildSpeakButton(text));
+        msgDiv.appendChild(buildReactionBar());
     }
 
     chatContainer.appendChild(msgDiv);
@@ -1066,6 +1151,37 @@ function appendMessage(text, sender, { silent = false } = {}) {
     if (sender === 'bot' && voiceEnabled && !silent) speak(text);
 
     scrollToBottom();
+}
+
+/**
+ * A small row of reactions under a reply. Picking one is one-way: it updates the
+ * stored reaction, she notices it on the next turn, and a different choice just
+ * replaces it.
+ */
+function buildReactionBar() {
+    const bar = document.createElement('div');
+    bar.className = 'reaction-bar';
+
+    for (const emoji of REACTIONS) {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'reaction-btn';
+        btn.textContent = emoji;
+        btn.setAttribute('aria-label', `React with ${emoji}`);
+        btn.addEventListener('click', () => reactWith(emoji, bar));
+        bar.appendChild(btn);
+    }
+
+    return bar;
+}
+
+function reactWith(emoji, bar) {
+    memory.lastReaction = emoji;
+    saveMemory();
+
+    for (const btn of bar.querySelectorAll('.reaction-btn')) {
+        btn.classList.toggle('is-picked', btn.textContent === emoji);
+    }
 }
 
 function buildSpeakButton(text) {

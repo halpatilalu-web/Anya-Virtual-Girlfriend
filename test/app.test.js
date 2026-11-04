@@ -280,6 +280,104 @@ describe('error handling', () => {
     });
 });
 
+describe('expressive voice', () => {
+    const spokenText = async (reply) => {
+        const spy = spyPuter({ reply });
+        const app = boot(spy.factory);
+        await app.send('hi');
+        await new Promise((r) => setTimeout(r, 30));
+        return spy.calls.txt2speech[0];
+    };
+
+    it('sends SSML with prosody', async () => {
+        const call = await spokenText('Haan jaan.');
+        assert.match(call.text, /^<speak>/);
+        assert.match(call.text, /<prosody rate="/);
+        assert.equal(call.options.ssml, true);
+    });
+
+    it('speaks excited replies faster and higher', async () => {
+        const call = await spokenText('OMG haan!! Bohot mazaa aaya 😍');
+        assert.match(call.text, /rate="108%"/);
+        assert.match(call.text, /pitch="\+3%"/);
+    });
+
+    it('speaks tender replies slower and softer', async () => {
+        const call = await spokenText('Tumhari yaad aa rahi thi...');
+        assert.match(call.text, /rate="92%"/);
+        assert.match(call.text, /pitch="-2%"/);
+    });
+
+    it('inserts a break between sentences', async () => {
+        const call = await spokenText('Pehla. Doosra. Teesra.');
+        assert.match(call.text, /<break time="/);
+    });
+
+    it('escapes XML so a stray ampersand cannot break SSML', async () => {
+        const call = await spokenText('Me & you <3');
+        assert.match(call.text, /&amp;/);
+        assert.ok(!/<3/.test(call.text), 'raw angle bracket escaped');
+    });
+
+    it('keeps the Indian English voice settings', async () => {
+        const call = await spokenText('Haan.');
+        assert.equal(call.options.language, 'en-IN');
+        assert.equal(call.options.voice, 'Kajal');
+        assert.equal(call.options.engine, 'neural');
+    });
+});
+
+describe('reactions', () => {
+    it('renders a reaction bar under every reply', async () => {
+        const spy = spyPuter();
+        const app = boot(spy.factory);
+        await app.send('hi');
+        await new Promise((r) => setTimeout(r, 30));
+
+        assert.equal(app.$$('.reaction-bar').length, 1);
+        assert.equal(app.$$('.reaction-btn').length, 3);
+    });
+
+    it('stores the picked reaction and marks the button', async () => {
+        const spy = spyPuter();
+        const app = boot(spy.factory);
+        await app.send('hi');
+        await new Promise((r) => setTimeout(r, 30));
+
+        app.$('.reaction-btn').click();
+
+        const stored = JSON.parse(app.window.localStorage.getItem('priya.memory.v1'));
+        assert.equal(stored.lastReaction, '\u2764\uFE0F');
+        assert.equal(app.$$('.reaction-btn.is-picked').length, 1);
+    });
+
+    it('tells her about the reaction on the next turn', async () => {
+        const spy = spyPuter();
+        const app = boot(spy.factory);
+        await app.send('pehla');
+        await new Promise((r) => setTimeout(r, 30));
+
+        app.$('.reaction-btn').click();
+        await app.send('doosra');
+
+        assert.match(spy.calls.chat[1].messages[0].content, /reacted to your last message/);
+    });
+
+    it('replaces the previous reaction rather than accumulating', async () => {
+        const spy = spyPuter();
+        const app = boot(spy.factory);
+        await app.send('hi');
+        await new Promise((r) => setTimeout(r, 30));
+
+        app.$$('.reaction-btn')[0].click();
+        app.$$('.reaction-btn')[1].click();
+
+        const stored = JSON.parse(app.window.localStorage.getItem('priya.memory.v1'));
+        assert.equal(stored.lastReaction, '\u{1F602}');
+        assert.equal(app.$$('.reaction-btn.is-picked').length, 1);
+    });
+});
+
 describe('streaming', () => {
     it('requests a stream', async () => {
         const spy = spyPuter();
@@ -316,6 +414,29 @@ describe('streaming', () => {
 
         const stored = JSON.parse(app.window.localStorage.getItem('priya.memory.v1'));
         assert.equal(stored.facts.length, 1);
+    });
+
+    it('removes the typing spinner as soon as the stream starts', async () => {
+        const spy = spyPuter({ chunks: ['a', 'b'] });
+        const app = boot(spy.factory);
+
+        const pending = app.send('hi');
+        await pending;
+
+        // The streamed bubble is the reply; the spinner must be gone even though
+        // the reply is still painting.
+        assert.equal(app.$$('.typing-indicator').length, 0);
+        assert.equal(app.$$('.bubble.is-streaming').length, 0, 'caret cleared on finish');
+    });
+
+    it('marks the bubble as streaming while chunks arrive', async () => {
+        const spy = spyPuter({ chunks: ['a', 'b', 'c'] });
+        const app = boot(spy.factory);
+        await app.send('hi');
+        await new Promise((r) => setTimeout(r, 30));
+
+        // After finishing, the streaming class is removed.
+        assert.equal(app.$$('.is-streaming').length, 0);
     });
 
     it('attaches the speaker button only once the reply is final', async () => {
@@ -656,7 +777,8 @@ describe('voice', () => {
         await new Promise((r) => setTimeout(r, 30));
 
         assert.equal(spy.calls.txt2speech.length, 1);
-        assert.equal(spy.calls.txt2speech[0].text, 'Haan jaan ❤️');
+        // Expressive voice wraps the reply in SSML (see buildSsml).
+        assert.match(spy.calls.txt2speech[0].text, /Haan jaan ❤️/);
     });
 
     it('uses an Indian English neural voice, which suits Hinglish', async () => {
