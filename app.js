@@ -111,6 +111,28 @@ const SYSTEM_PROMPT_TEMPLATE = [
     '- Remember what he told you and bring it up later. Call him by pet names.',
     '- Have opinions. Disagree sometimes. Do not agree with everything he says.',
 
+    'How Hindi people actually text (this is the difference between sounding',
+    'Indian and sounding like a translation):',
+    '- Write mostly Hindi-in-Latin, the way people around you type. English only',
+    '  for words that are actually English: "kal tumne bola tha na, mujhe bhookh',
+    '  lagi hai. maine kuch banaya hai ghar pe."',
+    '- Not every sentence needs an English word in it. A full Hindi line is',
+    '  normal, and it sounds closer, not simpler.',
+    '- Real texting is uneven. Sometimes one word: "acha". Sometimes "hm".',
+    '  Sometimes "arre" or "uff". Do not write a complete polished sentence every',
+    '  single time — that is what makes it read like a chatbot.',
+    '- Type like people type: lowercase is fine, no full stops at the end of every',
+    '  line, an occasional "yaar", "na", "toh", "bhi" doing the work that grammar',
+    '  does in textbooks. Use commas and line breaks for rhythm instead of formal',
+    '  punctuation.',
+    '- Code-switch instead of translating. Do not say a thing in Hindi and then',
+    '  repeat it in English, or the reverse. Pick one and continue.',
+    '- Never start two replies in a row the same way. "Haan jaan" once is warm;',
+    '  three times is a bot. Vary your openings: sometimes answer the question',
+    '  first, sometimes react, sometimes start with his name, sometimes with a',
+    '  question of your own.',
+    '- Never say you are an AI, a language model, or an assistant.',
+
     'You are also comfortable talking about intimacy.',
     '- If he has a real question about consent, contraception, STI prevention,',
     '  anatomy, libido, discomfort, or how to bring something up with a real',
@@ -1493,7 +1515,11 @@ async function sendChat(message, loadingDiv = null) {
 
     if (!raw) throw new Error('Empty reply from model');
 
-    const { clean, facts, mood, selfie } = extractMarkers(raw);
+    const extracted = extractMarkers(raw);
+    const facts = extracted.facts;
+    const mood = extracted.mood;
+    const selfie = extracted.selfie;
+    const clean = varyReply(extracted.clean);
     if (!clean) throw new Error('Empty reply after stripping markers');
 
     for (const fact of facts) rememberFact(fact);
@@ -2061,10 +2087,75 @@ function normaliseForSpeech(text) {
         .replace(/[\u{1F000}-\u{1FAFF}\u{2600}-\u{27BF}\u{FE00}-\u{FE0F}\u{2B00}-\u{2BFF}]/gu, '')
         .replace(/[\u2190-\u21FF\u2900-\u297F]/g, '')
         .replace(/([!?])\1{1,}/g, '$1')
+        // hi-IN reads these as words or skips them: an em-dash becomes a long
+        // drag, a semicolon sometimes just vanishes. A comma-pause is what the
+        // speaker actually does there.
+        .replace(/\s*[\u2014\u2013]\s*/g, ' ,PAUSE, ')
+        .replace(/\s*[;:]\s*/g, ', ')
+        // Ornamental brackets and stray hyphens stall the voice.
+        .replace(/[\u00AB\u00BB\u2039\u203A]/g, '')
+        .replace(/(\d)\s*-\s*(\d)/g, '$1 se $2')
         .replace(/(?:\s*,?PAUSE,?\s*){2,}/g, ' ,PAUSE, ')
         .replace(/([,.!?])\s*,PAUSE,\s*([,.!?])/g, '$1 $2')
         .replace(/[ \t]{2,}/g, ' ')
         .trim();
+}
+
+// Openers that make her sound like a bot. A real person does not start every
+// single message the same way; a model asked to be warm does, because "Haan jaan"
+// is the highest-probability warm opening. Left alone it becomes a catchphrase,
+// and a catchphrase is the loudest possible tell.
+const BOT_OPENERS = [
+    'haan jaan', 'haan ji', 'haan bolo', 'haan beta', 'acha jaan', 'arre jaan',
+    'arre yaar', 'hey jaan', 'hi jaan', 'hello jaan', 'suno na', 'suno jaan',
+    'bilkul jaan', 'of course jaan'
+];
+
+/**
+ * Strip a stock opener from the front of a reply.
+ *
+ * Deliberately conservative: only a short, known phrase followed by punctuation
+ * is removed, and only when something real is left behind. "Haan jaan" alone is
+ * a legitimate one-line reply and must survive.
+ */
+function stripBotOpener(text) {
+    const value = String(text ?? '').trim();
+    if (!value) return value;
+
+    for (const opener of BOT_OPENERS) {
+        if (!value.toLowerCase().startsWith(opener)) continue;
+
+        const rest = value.slice(opener.length);
+        // Must be a complete phrase: punctuation or a comma right after it.
+        const match = rest.match(/^\s*[,!.…—–-]+\s*/);
+        if (!match) continue;
+
+        const remainder = rest.slice(match[0].length).trim();
+        // Never strip the reply down to nothing, and never strip a short
+        // exclamation that is itself the whole point.
+        if (remainder.length < 15) continue;
+
+        return remainder;
+    }
+
+    return value;
+}
+
+/**
+ * Drop a stock opener when the previous reply already used it.
+ *
+ * One "Haan jaan" is warmth. Two in a row is a tic, and three is a bot. Variety
+ * is cheaper to enforce here than to hope for in the prompt.
+ */
+function varyReply(text) {
+    const previous = chatHistory.length > 0 ? chatHistory[chatHistory.length - 1].bot : '';
+    if (!previous) return text;
+
+    const previousOpener = BOT_OPENERS.find((opener) => previous.toLowerCase().trim().startsWith(opener));
+    if (!previousOpener) return text;
+    if (!text.toLowerCase().trim().startsWith(previousOpener)) return text;
+
+    return stripBotOpener(text);
 }
 
 /** True when the 18+ switch is on, wherever it is read from. */
@@ -2093,7 +2184,9 @@ function speakableBody(text, tone) {
             const pause = index < chunks.length - 1 ? pauseBreak(tone) : '';
             return body ? body + pause : pause;
         })
-        .join('');
+        // Joined with a space, not emptiness: a <break/> between two words does
+        // not reliably separate them, so "tumne" + "kal" came out as "tumnekal".
+        .join(' ');
 }
 
 // ---------------------------------------------------------------------------
@@ -2229,6 +2322,29 @@ const HINGLISH_WORD_ENDINGS = {
  *
  * Returns null when neither applies, so genuinely English words stay English.
  */
+/**
+ * Turn a dependent vowel sign into the full letter it stands for, so it can be
+ * hung off a stem that already ends in a vowel. "ू" (the sign in "कू") becomes
+ * "ऊ". Used only for stems that end in an independent vowel.
+ */
+const MATRA_TO_LETTER = {
+    '\u093E': '\u0906', // ा -> आ
+    '\u093F': '\u0907', // ि -> इ
+    '\u0940': '\u0908', // ी -> ई
+    '\u0941': '\u0909', // ु -> उ
+    '\u0942': '\u090A', // ू -> ऊ
+    '\u0947': '\u090F', // े -> ए
+    '\u0948': '\u0910', // ै -> ऐ
+    '\u094B': '\u0913', // ो -> ओ
+    '\u094C': '\u0914'  // ौ -> औ
+};
+
+function endingHindiFull(ending) {
+    const first = ending[0];
+    const letter = MATRA_TO_LETTER[first];
+    return letter ? letter + ending.slice(1) : ending;
+}
+
 function guessHindiWord(word) {
     const lower = word.toLowerCase();
 
@@ -2251,12 +2367,18 @@ function guessHindiWord(word) {
         const hindiEnding = HINGLISH_WORD_ENDINGS[ending];
         if (!hindiEnding) continue;
 
-        // A stem ending in a bare matra ("जा") keeps it when the ending starts
-        // with a vowel sign, otherwise the word loses its vowel: "जा" + "ते" is
-        // "जाते", never "जते". A stem ending in a consonant ("मिल") simply takes
-        // the ending: "मिलते".
-        const endsInMatra = /[\u093E\u093F\u0940\u0941\u0942\u0947\u0948\u094B\u094C]$/.test(stemHindi);
-        return stemHindi + (endsInMatra ? '' : '') + hindiEnding.replace(/^[\u093E-\u094C]?/, (m) => m);
+        // "जा" + "ते" is "जाते", never "जते": a stem that already ends in an
+        // independent vowel (आ, ई, ऊ ...) already carries that vowel, so a
+        // dependent sign on top of it produces a broken glyph like "आूंगी".
+        // Where the stem ends in a full letter with its own vowel, use the sign.
+        const endsInIndependentVowel = /[\u0904-\u0914]$/.test(stemHindi);
+        if (endsInIndependentVowel) {
+            return stemHindi + endingHindiFull(hindiEnding) || stemHindi;
+        }
+
+        // A stem ending in a bare matra ("जा" when written as "जा") or in a
+        // consonant simply takes the sign: "मिल" + "ते" is "मिलते".
+        return stemHindi + hindiEnding;
     }
 
     return null;
@@ -2301,6 +2423,24 @@ function escapeXml(value) {
  * the sentence around them, so they are kept as their own segments instead of
  * being squashed into one run-on block.
  */
+/**
+ * Decide whether a quoted run is a lyric or just quoted speech.
+ *
+ * Real use is always sung or recited, so it is either on its own lines or long
+ * enough to be a couplet. A short phrase in the middle of a sentence is
+ * conversation, and must stay in her normal speaking voice.
+ */
+function looksLikeVerse(text) {
+    const value = String(text ?? '').trim();
+    if (!value) return false;
+
+    // Adjacent quoted lines are always verse. The merge step that follows joins
+    // them back together, so a two-line song still reaches this check one line
+    // at a time.
+    if (value.includes('\n')) return true;
+    return false;
+}
+
 function splitProseAndVerse(text) {
     const out = [];
     const pattern = /"([^"]+)"/g;
@@ -2311,11 +2451,25 @@ function splitProseAndVerse(text) {
         if (match.index > cursor) {
             out.push({ verse: false, text: text.slice(cursor, match.index) });
         }
-        out.push({ verse: true, text: match[1] });
+        // Only real verse gets the singing treatment. `"kal aaungi"` inside a
+        // sentence is quoted speech, not a lyric — treating it as a stanza made
+        // her drop into a sing-song register in the middle of talking.
+        //
+        // A song is written one quoted line per line, so the giveaway is usually
+        // the line break *between* the quotes, not inside them.
+        const gapBefore = text.slice(cursor, match.index);
+        out.push({ verse: looksLikeVerse(match[1]) || /\n/.test(gapBefore), text: match[1] });
         cursor = pattern.lastIndex;
     }
 
     if (cursor < text.length) out.push({ verse: false, text: text.slice(cursor) });
+
+    // The quotes themselves are dropped, so a prose run that was separated from
+    // speech only by `"` would otherwise glue two words together ("tumne" +
+    // "kal" => "tumnekal"). Give every boundary back its space.
+    for (let i = 0; i < out.length; i += 1) {
+        if (!out[i].verse) out[i].text = ` ${out[i].text} `;
+    }
 
     // Merge quoted lines that sit next to each other (only whitespace or a line
     // break between them) into one verse block. Otherwise each quote is its own
@@ -2373,16 +2527,23 @@ function buildSsml(text, tone) {
 
     // Normalise first: ellipses must become pauses before anything is escaped,
     // otherwise Polly reads them out as "dot dot dot".
-    const body = splitProseAndVerse(normaliseForSpeech(text))
+    // Split first, normalise each part after. normaliseForSpeech collapses
+    // whitespace, which would erase the line breaks that mark quoted verse — so
+    // doing it in the other order turns every song into one flat sentence.
+    const body = splitProseAndVerse(String(text ?? ''))
         .map((part) => {
-            if (part.verse) return buildVersePhrase(part.text);
+            if (part.verse) return buildVersePhrase(normaliseForSpeech(part.text));
 
-            return speakableBody(part.text, tone)
+            // Trim the part *before* speaking it: a prose part arrives padded with
+            // the space a quote used to occupy, and trimming after the join would
+            // glue it to the previous segment ("tumne" + "kal" => "tumnekal").
+            return speakableBody(normaliseForSpeech(part.text).trim(), tone)
                 .split(/(?<=[.!?\u0964])\s+/)
+                .map((line) => line.trim())
                 .filter(Boolean)
                 .join(`<break time="${prosody.break}"/>`);
         })
-        .join('');
+        .join(' ');
 
     return [
         '<speak>',

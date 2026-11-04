@@ -342,6 +342,46 @@ switching mid-sentence when the text mixes Devanagari and Latin. So:
 Matching is word-level, so `hai` inside `chair` is untouched. The word list covers
 the patterns Hinglish actually uses, not all of Hindi.
 
+### Texting like a person, not an assistant
+
+Two different problems, fixed in two different places.
+
+**In the prompt.** A section on how Hindi speakers actually type: mostly
+Hindi-in-Latin, English only for words that are genuinely English, uneven
+message lengths (sometimes one word — `acha`, `hm`, `arre`), lowercase and no
+full stop on every line, code-switching instead of translating the same thing
+twice. Also: never start two replies in a row the same way.
+
+**In code, because the prompt cannot be trusted for this.** `varyReply()` looks
+at the previous reply; if the new one opens with the same stock phrase
+(`Haan jaan`, `arre yaar`, `suno na`, …) it strips it — but only when a real
+sentence is left behind, so a one-line `Haan jaan ❤️` survives intact. One is
+warmth. Three in a row is a tic, and a tic is the loudest possible tell.
+
+### Speech polish
+
+Found by reading the actual SSML that reaches the voice, not by guessing:
+
+- **Em dashes and semicolons are read or swallowed.** `hi-IN` renders `—` as a
+  long drag and often drops `;` entirely. Both now become a comma-pause, which
+  is what a speaker does there anyway.
+- **A quoted phrase is not a lyric.** Verse detection used to treat *any*
+  quoted run as a song, so `tumne "kal aaungi" bola tha` dropped her into an
+  84% sing-song register mid-sentence. Verse now requires a line break — inside
+  the quote or between adjacent quotes — which is how a song is actually
+  written and how reported speech never is.
+- **Words were being glued together.** Dropping the quote characters removed the
+  only separator between the prose on either side, so `tumne` + `kal` rendered
+  as `tumnekal`. Segments are now joined with a space, not with emptiness.
+- **Split prose/verse before normalising.** `normaliseForSpeech()` collapses
+  whitespace, which erased the line breaks that identify verse. Doing it first
+  turned every song into one flat sentence.
+- **`आूंगी` was not a word.** A stem ending in an independent vowel (`आ`) already
+  carries its vowel, so hanging the dependent sign `ू` on it produces a glyph no
+  reader can parse. Such stems now take the full letter instead: `आऊंगी`.
+
+Every one of these has a test that reads the SSML the way the voice engine will.
+
 ### Ellipses are pauses, not words
 
 `"Haan.... phir kya hua?"` used to be spoken as **"dot dot dot dot"** — the engine
