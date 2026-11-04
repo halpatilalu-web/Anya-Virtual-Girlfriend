@@ -54,7 +54,20 @@ export function spyPuter(overrides = {}) {
             ai: {
                 chat: async (messages, options) => {
                     calls.chat.push({ messages, options });
-                    return { message: { content: overrides.reply ?? 'Haan jaan ❤️' } };
+
+                    // Non-streaming call: plain response object.
+                    if (!options?.stream) {
+                        return { message: { content: overrides.reply ?? 'Haan jaan ❤️' } };
+                    }
+
+                    // Streaming call: async iterable of text chunks.
+                    // Derive chunks from `reply` so a test that sets a reply
+                    // behaves the same on both paths.
+                    const source = overrides.reply ?? 'Haan jaan ❤️';
+                    const chunks = overrides.chunks ?? [source];
+                    return (async function* stream() {
+                        for (const text of chunks) yield { type: 'text', text };
+                    })();
                 },
                 txt2speech: async (text, options) => {
                     calls.txt2speech.push({ text, options });
