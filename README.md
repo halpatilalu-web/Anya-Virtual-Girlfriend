@@ -100,6 +100,56 @@ Two details matter:
 
 Tone detection is local string matching, so it costs nothing extra.
 
+### Her name
+
+Tap the header name to open **Her name & face**. Any name works — that is the
+whole feature — and it is stored as `memory.gName` (the storage key predates the
+rename). It flows into the persona prompt, the header, photo captions, the
+greeting and the download filename. Empty names are refused and long ones are
+capped at 24 characters so the header cannot be blown out.
+
+### Face lock
+
+Every photo used to be a fresh roll of the dice: same words in the prompt, but a
+different woman each time. **Face lock photo** fixes that.
+
+Pick a clear front photo and `readIdentityFile()` shrinks it to a 640 px JPEG data
+URL. That data URL is stored in memory and passed to every generation as
+`input_image`, which Puter forwards to the provider as a real image-to-image
+reference — the part that actually anchors a face.
+
+Two halves are kept strictly apart in `buildImagePrompt()`:
+
+| Fixed (identity) | Free (scene) |
+| --- | --- |
+| `IDENTITY_LOOK` — hair, eyes, nose, face shape, skin, dimple | pose, expression, outfit, location, lighting |
+
+The identity half is byte-identical on every call; only the scene comes from the
+message. That is also asserted in the tests, because drift here is invisible until
+the photos stop looking like the same person.
+
+Limits worth knowing:
+
+- **Provider-dependent.** `input_image` is documented for every Puter image
+  provider, but *how closely* a model follows a reference varies. `gpt-image-2`
+  (the default) supports it; text-to-image-only models reject references.
+- **Storage is per browser.** The reference lives in `localStorage`, so it is not
+  synced across devices and "Forget all" is the only wipe.
+- **A Drive folder cannot be read by the app.** Google Drive needs OAuth and a
+  server; the photo has to be picked from the device (or downloaded first).
+
+### Saving photos
+
+Every generated photo gets a **⬇ Save photo** link with a `download` attribute,
+named after her (`ananya-das-1712…jpg`). Without it the only desktop route was
+right-click → Save image, which most people never find.
+
+### Instagram-style chat
+
+Bubbles follow DM conventions rather than a glass-card look: one flat colour per
+sender, a 22 px radius, and only the corner nearest the sender clipped. Photos get
+a caption line and an action row underneath, the way a DM attachment does.
+
 ### Songs, shayari and verses
 
 She can sing — with the actual lyrics — and she can carry a whole conversation
@@ -220,15 +270,19 @@ Everything tunable lives at the top of `app.js`:
 | --- | --- |
 | `CHAT_MODEL` | Any model id from the [AI model directory](https://developer.puter.com/ai/models/). Defaults to `gpt-5.4-nano`. |
 | `IMAGE_OPTIONS` | Passed to `txt2img()`. Add `model: 'black-forest-labs/flux-schnell'` for a much cheaper image. |
-| `IMAGE_PROMPT_PREFIX` | The fixed character description prepended to every photo prompt. |
-| `SYSTEM_PROMPT` | Priya's persona and language instructions. |
+| `IMAGE_PROMPT_PREFIX` | The fixed identity description prepended to every photo prompt. Built from `IDENTITY_LOOK`. |
+| `IDENTITY_LOOK` | The words that describe her face. Change these to change how she looks when no reference photo is locked. |
+| `SYSTEM_PROMPT_TEMPLATE` | Her persona and language instructions. `${NAME}` is replaced with the chosen name per turn. |
+| `DEFAULT_NAME` | `'Priya'` — used until the user renames her. |
+| `IDENTITY_MAX_EDGE` | Longest edge kept for the locked face (640 px). |
 | `MAX_HISTORY_TURNS` | How many past exchanges are replayed to the model (default 5). |
 
 ### State
 
 The conversation is kept in `sessionStorage` under `priya.chat.v1`, so a refresh
-keeps it, a new tab starts fresh, and **Clear** wipes both the transcript and the
-stored copy. Nothing is sent anywhere except to Puter as model context.
+keeps it, a new tab starts fresh, and **Forget all** wipes both the transcript and
+the stored copy. Durable state — including her name and the locked face — lives in
+`localStorage` under `priya.memory.v1`. Nothing is sent anywhere except to Puter as model context.
 
 Storage access is wrapped in `try/catch`: private mode, a sandboxed iframe or a
 full quota degrade to "no persistence" instead of breaking the chat.
