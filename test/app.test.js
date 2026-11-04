@@ -306,6 +306,109 @@ describe('error handling', () => {
     });
 });
 
+describe('free image route', () => {
+    // User's ask: a free image model, no money at all. Pollinations Classic is
+    // documented as free/no-signup/rate-limited, so it is the default route.
+    const withFree = (impl) => (window) => {
+        window.__PRIYA_FREE_IMAGE__ = impl;
+        return { ai: { chat: async () => ({ message: { content: 'x' } }), txt2img: null } };
+    };
+
+    const freeImg = (window) => {
+        const img = window.document.createElement('img');
+        // jsdom never loads, so set the intrinsic size by hand.
+        Object.defineProperty(img, 'naturalWidth', { value: 512 });
+        img.src = 'https://image.pollinations.ai/prompt/x';
+        return img;
+    };
+
+    it('tries the free endpoint first, by default', async () => {
+        const seen = [];
+        const app = boot(withFree((prompt, url) => {
+            seen.push({ prompt, url });
+            return freeImg(app.window);
+        }));
+        await app.send('photo bhejo');
+
+        assert.equal(seen.length, 1, 'free route used');
+        assert.match(seen[0].url, /^https:\/\/image\.pollinations\.ai\/prompt\//);
+        assert.ok(app.$('.chat-image'), 'image rendered');
+    });
+
+    it('asks for a private, safe, logo-free image', async () => {
+        let url = '';
+        const app = boot(withFree((prompt, u) => {
+            url = u;
+            return freeImg(app.window);
+        }));
+        await app.send('photo bhejo');
+
+        assert.match(url, /private=true/, 'never publish her to the public feed');
+        assert.match(url, /safe=true/);
+        assert.match(url, /nologo=true/);
+        assert.match(url, /seed=\d+/);
+    });
+
+    it('does not call the paid provider when free works', async () => {
+        const spy = spyPuter({ reply: 'x' });
+        const app = boot((window) => {
+            window.__PRIYA_FREE_IMAGE__ = () => freeImg(window);
+            return spy.factory(window);
+        });
+        await app.send('photo bhejo');
+
+        assert.equal(spy.calls.txt2img.length, 0, 'no paid call on the free path');
+    });
+
+    it('falls back to the paid route when free fails', async () => {
+        const spy = spyPuter({ reply: 'x' });
+        const app = boot((window) => {
+            window.__PRIYA_FREE_IMAGE__ = () => {
+                throw Object.assign(new Error('nope'), { code: 'free_unavailable' });
+            };
+            return spy.factory(window);
+        });
+        await app.send('photo bhejo');
+
+        assert.equal(spy.calls.txt2img.length, 1, 'paid retry happened');
+        assert.ok(app.$('.chat-image'), 'still got a photo');
+    });
+
+    it('switches to paid when a face is locked, because free has no references', async () => {
+        const spy = spyPuter({ reply: 'x' });
+        const app = boot(spy.factory);
+        app.window.eval(`setIdentityImage('data:image/jpeg;base64,AAAA')`);
+        app.window.eval(`setImageRoute('paid', { silent: true })`);
+
+        await app.send('photo bhejo');
+
+        const { options } = spy.calls.txt2img[0].args;
+        assert.equal(options.input_image, 'data:image/jpeg;base64,AAAA');
+    });
+
+    it('promises the free route in the header', () => {
+        const app = boot(spyPuter().factory);
+        assert.equal(app.$('#route-btn').textContent, 'Photos: Free');
+        assert.equal(app.$('#route-btn').getAttribute('aria-pressed'), 'false');
+    });
+
+    it('toggles to the paid route and remembers it', () => {
+        const app = boot(spyPuter().factory);
+        app.$('#route-btn').click();
+
+        assert.equal(app.$('#route-btn').textContent, 'Photos: Paid');
+        const stored = JSON.parse(app.window.localStorage.getItem('priya.memory.v1'));
+        assert.equal(stored.imageRoute, 'paid');
+    });
+
+    it('says plainly that a locked face needs the paid route', () => {
+        const app = boot(spyPuter().factory);
+        app.window.eval(`setIdentityImage('data:image/jpeg;base64,AAAA')`);
+
+        assert.match(app.$('#identity-state').textContent, /free model cannot use reference photos/i);
+    });
+});
+
 describe('voice fallback chain', () => {
     // The user's report: pressing play showed "Awaaz set nahi ho payi" — the
     // SSML request was rejected and there was no second route.
@@ -479,6 +582,7 @@ describe('image model', () => {
         const spy = spyPuter();
         const app = boot(spy.factory);
         app.window.eval(`setIdentityImage('data:image/jpeg;base64,AAAA');`);
+        app.window.eval(`setImageRoute('paid', { silent: true })`);
         await app.send('photo bhejo mandir me');
 
         const [{ prompt, args }] = spy.calls.txt2img;
@@ -584,6 +688,8 @@ describe('identity lock', () => {
         const spy = spyPuter();
         const app = boot(spy.factory);
         lockFace(app, 'data:image/jpeg;base64,AAAA');
+        // The free model has no image-to-image, so a lock implies the paid route.
+        app.window.eval(`setImageRoute('paid', { silent: true })`);
         await app.send('photo bhejo');
 
         const { options } = spy.calls.txt2img[0].args;
