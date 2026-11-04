@@ -74,7 +74,30 @@ full quota degrade to "no persistence" instead of breaking chat.
 | Away greeting | Return after 3+ hours and she greets you with the gap ("6 ghante baad aaye ho") |
 | Mood | A persistent mood (`warm`, `happy`, `missing`, `sulky`) she can change herself |
 | Idle nudge | After 20 minutes of silence she sends one message — once per idle period, never while a request is in flight or the tab is hidden |
-| Typing delay | Replies are held 0.5–2.5s based on length, so they land at a human pace |
+| Typing delay | Replies are held 0.5–2.5s based on length, so they land at a human pace (skipped when streaming) |
+| Streaming | Tokens are painted as they arrive, so a reply starts appearing almost immediately |
+| Spontaneous selfies | She sometimes sends a photo unprompted, driven by a `[[selfie]]` marker |
+
+### Streaming
+
+`chat(..., { stream: true })` returns an async iterable of chunks. Only
+`type: 'text'` chunks are painted; reasoning and usage chunks are ignored. The
+partial-marker problem is the subtle part: a `[[remember: ...]]` directive can
+arrive split across chunks, so `render()` runs the marker stripper on every
+paint. Without that, `[[remem` flashes on screen.
+
+Three fallbacks keep this safe:
+
+- streaming throws → a single non-streaming request is made instead
+- the stream yields no text → same fallback
+- the stream dies mid-reply → the partial text is kept rather than discarded
+
+### Spontaneous selfies
+
+The model can append a `[[selfie]]` marker when a photo would feel natural. It is
+gated by `SELFIE_COOLDOWN_TURNS` (default 4 assistant turns) so she cannot flood
+the chat with paid image generations, and a failed selfie is swallowed silently —
+nobody should get an error message for a photo they never asked for.
 
 ### Voice
 
@@ -182,7 +205,7 @@ to configure.
 ```bash
 npm install        # dev-only: jsdom + css-tree for the test suite
 npm run check      # CSS lint + full test suite
-npm test           # 86 tests: intent detection, chat, images, XSS, errors, persistence, server
+npm test           # 98 tests: intent detection, chat, images, XSS, errors, persistence, server
 npm run lint       # validates every CSS declaration in index.html
 ```
 

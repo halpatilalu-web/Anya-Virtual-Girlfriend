@@ -128,10 +128,11 @@ describe('chat', () => {
 
         const app = boot(() => ({
             ai: {
-                chat: async () => {
+                chat: async (_messages, options) => {
                     calls += 1;
                     await gate;
-                    return { message: { content: 'slow' } };
+                    if (!options?.stream) return { message: { content: 'slow' } };
+                    return (async function* () { yield { type: 'text', text: 'slow' }; })();
                 },
                 txt2img: async () => null
             }
@@ -276,6 +277,180 @@ describe('error handling', () => {
         await app.send('hi');
 
         assert.ok(app.text().includes('AI service load nahi hui'));
+    });
+});
+
+describe('streaming', () => {
+    it('requests a stream', async () => {
+        const spy = spyPuter();
+        const app = boot(spy.factory);
+        await app.send('hi');
+
+        assert.equal(spy.calls.chat[0].options.stream, true);
+    });
+
+    it('paints multiple chunks into one bubble', async () => {
+        const spy = spyPuter({ chunks: ['Haan ', 'jaan, ', 'sun rahi hu ❤️'] });
+        const app = boot(spy.factory);
+        await app.send('hi');
+        await new Promise((r) => setTimeout(r, 30));
+
+        const transcript = app.document.getElementById('chat-container').textContent;
+        assert.ok(transcript.includes('Haan jaan, sun rahi hu ❤️'));
+        // One reply bubble, not one per chunk. The static greeting is also a
+        // .bot-bubble, so count replies by their text only.
+        const replies = app.$$('.bubble.bot-bubble').filter((b) => b.textContent.includes('Haan'));
+        assert.equal(replies.length, 1);
+    });
+
+    it('never flashes a partial marker while streaming', async () => {
+        // The marker arrives split across chunks; none of it may render.
+        const spy = spyPuter({ chunks: ['Theek hai. ', '[[remem', 'ber: He is 24]]'] });
+        const app = boot(spy.factory);
+        await app.send('hi');
+        await new Promise((r) => setTimeout(r, 30));
+
+        const transcript = app.document.getElementById('chat-container').textContent;
+        assert.ok(!transcript.includes('[['), 'no marker fragments on screen');
+        assert.ok(transcript.includes('Theek hai.'));
+
+        const stored = JSON.parse(app.window.localStorage.getItem('priya.memory.v1'));
+        assert.equal(stored.facts.length, 1);
+    });
+
+    it('attaches the speaker button only once the reply is final', async () => {
+        const spy = spyPuter({ chunks: ['a', 'b', 'c'] });
+        const app = boot(spy.factory);
+        await app.send('hi');
+        await new Promise((r) => setTimeout(r, 30));
+
+        assert.equal(app.$$('.speak-btn').length, 1);
+    });
+
+    it('falls back to a single request when streaming fails', async () => {
+        let nonStreamCalls = 0;
+        const app = boot(() => ({
+            ai: {
+                chat: async (_messages, options) => {
+                    if (options?.stream) throw new Error('streaming unsupported');
+                    nonStreamCalls += 1;
+                    return { message: { content: 'fallback reply' } };
+                },
+                txt2img: async () => null
+            }
+        }));
+        await app.send('hi');
+        await new Promise((r) => setTimeout(r, 30));
+
+        assert.equal(nonStreamCalls, 1);
+        assert.ok(app.text().includes('fallback reply'));
+    });
+
+    it('falls back when the stream yields no text at all', async () => {
+        let nonStreamCalls = 0;
+        const app = boot(() => ({
+            ai: {
+                chat: async (_messages, options) => {
+                    if (options?.stream) return (async function* () {})();
+                    nonStreamCalls += 1;
+                    return { message: { content: 'second try' } };
+                },
+                txt2img: async () => null
+            }
+        }));
+        await app.send('hi');
+        await new Promise((r) => setTimeout(r, 30));
+
+        assert.equal(nonStreamCalls, 1);
+        assert.ok(app.text().includes('second try'));
+    });
+
+    it('keeps a partial reply instead of discarding it', async () => {
+        const app = boot(() => ({
+            ai: {
+                chat: async (_messages, options) => {
+                    if (!options?.stream) return { message: { content: 'unused' } };
+                    return (async function* () {
+                        yield { type: 'text', text: 'aadha jawab ' };
+                        throw new Error('connection dropped');
+                    })();
+                },
+                txt2img: async () => null
+            }
+        }));
+        await app.send('hi');
+        await new Promise((r) => setTimeout(r, 30));
+
+        assert.ok(app.text().includes('aadha jawab'), 'partial text survives');
+    });
+
+    it('ignores non-text chunks', async () => {
+        const app = boot(() => ({
+            ai: {
+                chat: async (_messages, options) => {
+                    if (!options?.stream) return { message: { content: 'unused' } };
+                    return (async function* () {
+                        yield { type: 'reasoning', text: 'thinking hard' };
+                        yield { type: 'text', text: 'asli jawab' };
+                        yield { type: 'usage', input_tokens: 5 };
+                    })();
+                },
+                txt2img: async () => null
+            }
+        }));
+        await app.send('hi');
+        await new Promise((r) => setTimeout(r, 30));
+
+        const transcript = app.document.getElementById('chat-container').textContent;
+        assert.ok(transcript.includes('asli jawab'));
+        assert.ok(!transcript.includes('thinking hard'), 'reasoning is not shown');
+    });
+});
+
+describe('spontaneous selfies', () => {
+    it('sends a photo when the model asks for one and cooldown allows', async () => {
+        const spy = spyPuter({ reply: 'Miss kar rahi thi [[selfie]]' });
+        const app = boot(spy.factory);
+        await app.send('hi');
+        await new Promise((r) => setTimeout(r, 40));
+
+        assert.equal(spy.calls.txt2img.length, 1, 'selfie generated');
+        assert.ok(app.text().includes('Priya sent a photo'), 'caption differs from a requested photo');
+    });
+
+    it('never shows the marker', async () => {
+        const spy = spyPuter({ reply: 'Lo [[selfie]]' });
+        const app = boot(spy.factory);
+        await app.send('hi');
+        await new Promise((r) => setTimeout(r, 40));
+
+        assert.ok(!app.text().includes('[['));
+    });
+
+    it('respects the cooldown so she cannot flood the chat', async () => {
+        const spy = spyPuter({ reply: 'ek aur [[selfie]]' });
+        const app = boot(spy.factory);
+
+        await app.send('one');
+        await new Promise((r) => setTimeout(r, 40));
+        await app.send('two');
+        await new Promise((r) => setTimeout(r, 40));
+
+        assert.equal(spy.calls.txt2img.length, 1, 'second request is inside the cooldown');
+    });
+
+    it('does not break the chat when the selfie fails', async () => {
+        const spy = spyPuter({ reply: 'Lo [[selfie]]' });
+        const app = boot((window) => {
+            const api = spy.factory(window);
+            api.ai.txt2img = async () => { throw new Error('image service down'); };
+            return api;
+        });
+        await app.send('hi');
+        await new Promise((r) => setTimeout(r, 40));
+
+        assert.ok(app.text().includes('Lo'), 'reply still shown');
+        assert.ok(!app.text().includes('Photo nahi ban payi'), 'no scary error for a photo he never asked for');
     });
 });
 

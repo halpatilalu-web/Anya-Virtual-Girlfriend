@@ -86,6 +86,10 @@ const MARKER_RULES = [
     'is worried about — add a line at the very end of your reply in exactly this',
     'format: [[remember: one short fact, written in third person]]',
     'If your own feelings shifted this turn, add: [[mood: warm|happy|missing|sulky]]',
+    'If it would feel natural to send him a photo right now — you are getting',
+    'ready, you miss him, something reminded you of him, he asked how you look —',
+    'add [[selfie]] on its own line at the end. Do this rarely, at most once every',
+    'few messages, never twice in a row.',
     'Use at most two such lines, and only when there is something genuinely new.',
     'Never mention these lines, never explain them, never put them mid-sentence.'
 ].join(' ');
@@ -133,6 +137,13 @@ const TYPING = { min: 500, perChar: 12, max: 2500 };
 
 const MOODS = ['warm', 'happy', 'missing', 'sulky'];
 
+// Stream tokens as they arrive when the SDK supports it (see sendChat).
+const STREAMING = true;
+
+// How often a [[selfie]] marker is honoured, so she cannot flood the chat with
+// paid image generations. Counted in assistant turns.
+const SELFIE_COOLDOWN_TURNS = 4;
+
 const IDLE_NUDGES = [
     'Hey... kahan gaye? 🥺',
     'Jaan, busy ho kya? Main yahi hu jab free ho.',
@@ -159,6 +170,8 @@ let memory = loadMemory();
 const awayHours = hoursSince(memory.lastSeen);
 let idleTimer = null;
 let idleNudged = false;
+// Assistant turns since the last spontaneous selfie (cooldown gate).
+let turnsSinceSelfie = SELFIE_COOLDOWN_TURNS;
 
 const inputField = document.getElementById('user-input');
 const sendBtn = document.getElementById('send-btn');
@@ -405,7 +418,13 @@ function extractMarkers(raw) {
     const facts = [];
     let mood = null;
 
+    let selfie = false;
+
     let clean = String(raw ?? '')
+        .replace(/\[\[\s*selfie\s*\]\]/gi, () => {
+            selfie = true;
+            return '';
+        })
         .replace(/\[\[\s*remember\s*:\s*([^\]\n]+?)\s*\]\]/gi, (_, fact) => {
             facts.push(fact);
             return '';
@@ -421,7 +440,7 @@ function extractMarkers(raw) {
 
     clean = clean.replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
 
-    return { clean, facts, mood };
+    return { clean, facts, mood, selfie };
 }
 
 // ---------------------------------------------------------------------------
@@ -659,19 +678,31 @@ async function sendChat(message) {
     const timer = setTimeout(() => controller.abort(), CHAT_TIMEOUT_MS);
 
     let raw;
+    let bubble = null;
     try {
-        const response = await puter.ai.chat(messages, {
-            model: CHAT_MODEL,
-            signal: controller.signal
-        });
-        raw = extractReply(response);
+        if (STREAMING) {
+            bubble = beginStream();
+            raw = await streamReply(messages, controller, bubble);
+        }
+
+        // Fall back to a single request when streaming is off, unsupported, or
+        // produced nothing usable.
+        if (!raw) {
+            bubble?.remove();
+            bubble = null;
+            const response = await puter.ai.chat(messages, {
+                model: CHAT_MODEL,
+                signal: controller.signal
+            });
+            raw = extractReply(response);
+        }
     } finally {
         clearTimeout(timer);
     }
 
     if (!raw) throw new Error('Empty reply from model');
 
-    const { clean, facts, mood } = extractMarkers(raw);
+    const { clean, facts, mood, selfie } = extractMarkers(raw);
     if (!clean) throw new Error('Empty reply after stripping markers');
 
     for (const fact of facts) rememberFact(fact);
@@ -680,13 +711,122 @@ async function sendChat(message) {
         saveMemory();
     }
 
-    await humanDelay(clean);
+    // Streamed bubbles are already on screen and already painted; only a
+    // non-streamed reply needs the human-paced delay.
+    if (bubble) {
+        bubble.render(clean);
+    } else {
+        await humanDelay(clean);
+    }
 
     chatHistory.push({ user: message, bot: clean });
     while (chatHistory.length > MAX_HISTORY_TURNS) chatHistory.shift();
     saveHistory();
 
-    appendMessage(clean, 'bot');
+    turnsSinceSelfie += 1;
+
+    if (!bubble) appendMessage(clean, 'bot');
+    else bubble.finish(clean);
+
+    if (selfie && shouldSendSelfie()) {
+        await sendSelfie(clean);
+    }
+}
+
+/**
+ * Consume the async iterable chat() returns when stream: true and paint chunks
+ * into a bubble as they arrive.
+ *
+ * Only `type: 'text'` chunks carry the reply; reasoning chunks, usage and errors
+ * are ignored or surfaced. Marker directives are stripped before display, so a
+ * half-arrived "[[remem" must never flash on screen — hence render() also runs
+ * the stripper.
+ */
+async function streamReply(messages, controller, bubble) {
+    let stream;
+    try {
+        stream = await puter.ai.chat(messages, {
+            model: CHAT_MODEL,
+            signal: controller.signal,
+            stream: true
+        });
+    } catch {
+        return ''; // Caller falls back to the non-streaming path.
+    }
+
+    if (!stream || typeof stream[Symbol.asyncIterator] !== 'function') return '';
+
+    let buffer = '';
+    try {
+        for await (const chunk of stream) {
+            if (chunk?.type === 'error') throw new Error(chunk.message || 'stream error');
+            if (chunk?.type !== 'text' || typeof chunk.text !== 'string') continue;
+
+            buffer += chunk.text;
+            bubble.render(buffer);
+        }
+    } catch (error) {
+        // A partial reply is better than none, but never throw away a complete one.
+        if (!buffer.trim()) throw error;
+    }
+
+    return buffer.trim();
+}
+
+/** True when a selfie is allowed: not mid-request, and past the cooldown. */
+function shouldSendSelfie() {
+    if (turnsSinceSelfie < SELFIE_COOLDOWN_TURNS) return false;
+    turnsSinceSelfie = 0;
+    return true;
+}
+
+/**
+ * Spontaneous photo after a reply. Failures are swallowed on purpose: she
+ * should not apologise for a photo the user never asked for.
+ */
+async function sendSelfie(contextText) {
+    try {
+        const prompt = [IMAGE_PROMPT_PREFIX, PHOTO_STYLES[photoMode], contextText]
+            .filter(Boolean)
+            .join(', ');
+        const generated = await withTimeout(puter.ai.txt2img(prompt, TEST_MODE), IMAGE_TIMEOUT_MS);
+        appendImage(generated, photoMode, 'Priya sent a photo:');
+    } catch (error) {
+        console.error('[Priya] selfie failed', error);
+    }
+}
+
+/**
+ * A bot bubble that can be repainted while chunks arrive. The speaker button and
+ * voice playback are attached only once the reply is final.
+ */
+function beginStream() {
+    const div = document.createElement('div');
+    div.className = 'bubble bot-bubble';
+
+    const p = document.createElement('p');
+    p.className = 'bubble-text';
+    div.appendChild(p);
+
+    chatContainer.appendChild(div);
+    scrollToBottom();
+
+    return {
+        render(text) {
+            // Strip any partial or complete directive before it reaches the DOM.
+            p.textContent = extractMarkers(text).clean;
+            scrollToBottom();
+        },
+        finish(finalText) {
+            p.textContent = finalText;
+            div.appendChild(buildSpeakButton(finalText));
+            if (voiceEnabled) speak(finalText);
+            scrollToBottom();
+        },
+        remove() {
+            div.remove();
+        }
+    };
 }
 
 /**
@@ -741,14 +881,15 @@ async function sendImage(message) {
     appendImage(generated, photoMode);
 }
 
-function appendImage(generated, mode = 'normal') {
+function appendImage(generated, mode = 'normal', captionText = null) {
     const row = document.createElement('div');
     row.className = 'bubble bot-bubble';
 
     const caption = document.createElement('p');
     caption.className = 'img-caption';
-    caption.textContent =
-        mode === 'stylish' ? 'Priya shared a photo (styled):' : 'Priya shared a photo:';
+    caption.textContent = captionText ?? (
+        mode === 'stylish' ? 'Priya shared a photo (styled):' : 'Priya shared a photo:'
+    );
 
     const img = generated instanceof HTMLImageElement ? generated : document.createElement('img');
     img.alt = 'AI generated photo of Priya';
