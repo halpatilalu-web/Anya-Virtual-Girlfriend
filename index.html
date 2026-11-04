@@ -167,6 +167,44 @@
             border-color: rgba(219, 39, 119, 0.5);
             background: rgba(219, 39, 119, 0.15);
         }
+        .guide-limit {
+            margin-top: 14px;
+            padding: 9px 11px;
+            border-radius: 9px;
+            background: rgba(245, 158, 11, 0.10);
+            border: 1px solid rgba(245, 158, 11, 0.30);
+            font-size: 11px;
+            line-height: 1.5;
+        }
+        .guide-row {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 10px;
+            margin: 14px 0 4px;
+        }
+        .guide-label {
+            font-size: 12px;
+            font-weight: 600;
+            color: #e5e7eb;
+        }
+        .guide-check {
+            width: 16px;
+            height: 16px;
+            accent-color: #10b981;
+            cursor: pointer;
+        }
+        .guide-select {
+            flex: 1;
+            max-width: 210px;
+            padding: 5px 8px;
+            border-radius: 8px;
+            background: rgba(255, 255, 255, 0.06);
+            border: 1px solid rgba(255, 255, 255, 0.16);
+            color: #e5e7eb;
+            font-size: 11px;
+            cursor: pointer;
+        }
         .mode-badge {
             display: inline-block;
             margin-left: 6px;
@@ -514,9 +552,9 @@
             <!-- 18+ gate. Shown until the age confirmation is given. -->
             <div id="guide-gate" hidden>
                 <p class="identity-hint">
-                    Ye mode adult (18+) sex education ke liye hai — consent, safety,
-                    body, aur partner se baat karne ka tareeka. Plain Hindi me, bina
-                    sharam, bina lecture.
+                    Ye mode adult (18+) ke liye hai — consent, safety, body, aur partner
+                    se baat karne ka tareeka. Plain Hindi me, bina sharam, bina lecture.
+                    Close mood bhi isi ke saath khulta hai.
                 </p>
                 <p class="identity-hint">
                     <strong>Ye mode sirf 18 saal se upar ke liye hai.</strong>
@@ -534,9 +572,36 @@
                     <button id="guide-mode-btn" type="button" class="identity-btn">Guide mode</button>
                     <button id="guide-revoke" type="button" class="memory-link">Turn off 18+ mode</button>
                 </div>
+
+                <div class="guide-row">
+                    <label class="guide-label" for="close-mood">Close mood</label>
+                    <input id="close-mood" type="checkbox" class="guide-check">
+                </div>
+                <p class="identity-hint">
+                    Aawaz dheemi aur garam, baat kareeb ki. Ye sirf tone badalta hai.
+                </p>
+
+                <div class="guide-row">
+                    <label class="guide-label" for="chat-model">Chat brain</label>
+                    <select id="chat-model" class="guide-select"></select>
+                </div>
+                <p class="identity-hint">
+                    Model badalne se sirf likhne ka andaaz badalta hai — jo wo keh
+                    sakti hai wo wahi rehta hai.
+                </p>
+
                 <p class="identity-hint">
                     Ye padhne ke liye nahi boli jaati — bas samajhne ke liye.
                     Doctor nahi hu, aur serious cheez me doctor hi jaana.
+                </p>
+
+                <!-- Said plainly, because the alternative is a user who thinks the
+                     switch is broken rather than honest about its limits. -->
+                <p class="identity-hint guide-limit">
+                    Jo is mode me nahi milega: explicit sex scene likhna, NSFW photo,
+                    ya moaning audio. Puter ke saare models provider level par wo block
+                    karte hain — dena matlab ek button dena jo hamesha fail ho.
+                    Jo milta hai: sach, saaf Hindi me, aur ek garam, dheemi aawaz.
                 </p>
             </div>
         </section>

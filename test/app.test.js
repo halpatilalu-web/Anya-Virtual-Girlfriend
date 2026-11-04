@@ -1852,3 +1852,121 @@ describe('guide mode', () => {
     });
 
 });
+
+// ---------------------------------------------------------------------------
+// Close mood and the model picker
+// ---------------------------------------------------------------------------
+
+describe('close mood', () => {
+    const stored = (app) => JSON.parse(app.window.localStorage.getItem('priya.memory.v1'));
+
+    it('is off until 18+ is confirmed', async () => {
+        const spy = spyPuter();
+        const app = boot(spy.factory);
+        await app.send('good night');
+        assert.ok(!spy.calls.chat[0].messages[0].content.includes('close switch'));
+    });
+
+    it('adds the closeness instruction once switched on', async () => {
+        const spy = spyPuter();
+        const app = boot(spy.factory);
+        app.document.getElementById('guide-btn').click();
+        app.document.getElementById('guide-gate-yes').click();
+        await new Promise((r) => setTimeout(r, 10));
+
+        app.document.getElementById('close-mood').click();
+        await new Promise((r) => setTimeout(r, 10));
+
+        assert.equal(stored(app).closeMood, true);
+        await app.send('good night');
+        assert.ok(spy.calls.chat[0].messages[0].content.includes('close switch'));
+    });
+
+    it('asks for closeness, never for explicit content', async () => {
+        const spy = spyPuter();
+        const app = boot(spy.factory);
+        app.document.getElementById('guide-btn').click();
+        app.document.getElementById('guide-gate-yes').click();
+        await new Promise((r) => setTimeout(r, 10));
+        app.document.getElementById('close-mood').click();
+        await new Promise((r) => setTimeout(r, 10));
+
+        await app.send('good night');
+        const prompt = spy.calls.chat[0].messages[0].content;
+
+        // The closeness instruction must be there...
+        assert.ok(prompt.includes('quiet room'), 'closeness instruction present');
+        // ...and must explicitly decline to escalate what she says.
+        assert.ok(
+            prompt.includes('not about escalating what you say'),
+            'the switch is a tone switch, not a content switch'
+        );
+    });
+
+    it('turning off 18+ also clears it', async () => {
+        const app = boot(spyPuter().factory);
+        app.document.getElementById('guide-btn').click();
+        app.document.getElementById('guide-gate-yes').click();
+        await new Promise((r) => setTimeout(r, 10));
+        app.document.getElementById('close-mood').click();
+        await new Promise((r) => setTimeout(r, 10));
+
+        app.document.getElementById('guide-revoke').click();
+        await new Promise((r) => setTimeout(r, 10));
+
+        assert.equal(stored(app).closeMood, false);
+        assert.equal(app.document.getElementById('close-mood').checked, false);
+    });
+
+    it('a close-mood reply is spoken slowly', async () => {
+        const spy = spyPuter({ reply: 'So jao ab... main yahi hu. ❤️' });
+        const app = boot(spy.factory);
+        app.document.getElementById('guide-btn').click();
+        app.document.getElementById('guide-gate-yes').click();
+        await new Promise((r) => setTimeout(r, 10));
+        app.document.getElementById('close-mood').click();
+        await new Promise((r) => setTimeout(r, 10));
+
+        // Ask for audio; the SSML that reaches the voice carries the rate.
+        await app.send('voice note bhejo');
+        const spoken = spy.calls.txt2speech.at(-1);
+        assert.ok(spoken, 'speech was requested');
+        assert.ok(spoken.text.includes('84%'), 'uses the intimate rate');
+    });
+});
+
+describe('model picker', () => {
+    it('defaults to the cheap model', async () => {
+        const spy = spyPuter();
+        const app = boot(spy.factory);
+        await app.send('hi');
+        assert.equal(spy.calls.chat[0].options.model, 'gpt-5.4-nano');
+    });
+
+    it('offers choices and applies the picked one', async () => {
+        const spy = spyPuter();
+        const app = boot(spy.factory);
+        app.document.getElementById('guide-btn').click();
+        app.document.getElementById('guide-gate-yes').click();
+        await new Promise((r) => setTimeout(r, 10));
+
+        const select = app.document.getElementById('chat-model');
+        assert.ok(select.options.length >= 3, 'several models offered');
+
+        select.value = 'claude-sonnet-4';
+        select.dispatchEvent(new app.window.Event('change'));
+        await app.send('hi');
+
+        assert.equal(spy.calls.chat.at(-1).options.model, 'claude-sonnet-4');
+    });
+
+    it('ignores a tampered model id', async () => {
+        const spy = spyPuter();
+        const app = boot((window) => {
+            window.localStorage.setItem('priya.model.v1', 'some/expensive-model');
+            return spy.factory(window);
+        });
+        await app.send('hi');
+        assert.equal(spy.calls.chat[0].options.model, 'gpt-5.4-nano');
+    });
+});
