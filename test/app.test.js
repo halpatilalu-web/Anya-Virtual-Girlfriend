@@ -1970,3 +1970,206 @@ describe('model picker', () => {
         assert.equal(spy.calls.chat[0].options.model, 'gpt-5.4-nano');
     });
 });
+
+// ---------------------------------------------------------------------------
+// Sounding like a person, not a bot
+// ---------------------------------------------------------------------------
+
+describe('reply variety', () => {
+    const lastBot = (app) => {
+        const bubbles = [...app.document.querySelectorAll('.bubble.bot-bubble')];
+        return bubbles.at(-1)?.textContent ?? '';
+    };
+
+    it('drops a stock opener the previous reply already used', async () => {
+        const spy = spyPuter({ reply: 'Haan jaan, aaj bahut miss kiya tumhe.' });
+        const app = boot(spy.factory);
+
+        await app.send('kya kar rahi ho');
+        assert.ok(lastBot(app).startsWith('Haan jaan'), 'first one keeps it');
+
+        await app.send('phir batao');
+        assert.ok(
+            !lastBot(app).startsWith('Haan jaan'),
+            'second one must not repeat the same opening'
+        );
+        assert.ok(lastBot(app).includes('aaj bahut miss kiya'), 'content survives the strip');
+    });
+
+    it('keeps a short reply that is only the opener', async () => {
+        const spy = spyPuter({ reply: 'Haan jaan ❤️' });
+        const app = boot(spy.factory);
+
+        await app.send('kya kar rahi ho');
+        await app.send('phir batao');
+        // Nothing else was said, so stripping would delete the whole reply.
+        assert.ok(lastBot(app).startsWith('Haan jaan ❤️'), 'short reply kept whole');
+    });
+
+    it('leaves a fresh opener alone', async () => {
+        const spy = spyPuter({ reply: 'Haan jaan, aaj bahut miss kiya tumhe.' });
+        const app = boot(spy.factory);
+        await app.send('pehla');
+        await app.send('doosra');
+        // Third turn: previous bot text has already been stripped, so the opener
+        // is available again rather than being banned forever.
+        await app.send('teesra');
+        assert.ok(lastBot(app).startsWith('Haan jaan'), 'opener can come back later');
+    });
+
+    it('teaches her to text like a Hindi speaker', () => {
+        const source = readFileSync(new URL('../app.js', import.meta.url), 'utf8');
+        assert.match(source, /How Hindi people actually text/);
+        assert.match(source, /Code-switch instead of translating/);
+        assert.match(source, /Never start two replies in a row the same way/);
+    });
+
+    it('keeps the old Hinglish spelling rules', () => {
+        const source = readFileSync(new URL('../app.js', import.meta.url), 'utf8');
+        assert.match(source, /"hai" not "hae"/);
+    });
+});
+
+// ---------------------------------------------------------------------------
+// Speech polish: punctuation, quoted speech, glued words
+// ---------------------------------------------------------------------------
+
+describe('speech polish', () => {
+    const ssmlFor = async (reply) => {
+        const spy = spyPuter({ reply });
+        const app = boot(spy.factory);
+        await app.send('voice note bhejo');
+        await new Promise((r) => setTimeout(r, 20));
+        return spy.calls.txt2speech.at(-1).text;
+    };
+
+    it('turns an em dash into a pause instead of reading it', async () => {
+        const ssml = await ssmlFor('Arre — aaj kahan thi tum');
+        assert.ok(!ssml.includes('—'), 'the dash is gone');
+        assert.match(ssml, /<break time="\d+ms"\/>/, 'replaced by a pause');
+    });
+
+    it('turns a semicolon into a comma, not a word', async () => {
+        const ssml = await ssmlFor('Main wait kar rahi thi; tum aa gaye');
+        assert.ok(!ssml.includes(';'), 'semicolon does not survive');
+        assert.match(ssml, /,/);
+    });
+
+    it('does not sing a phrase she is only quoting', async () => {
+        // A short quoted phrase inside a sentence is reported speech. Treating it
+        // as a lyric made her drop into a sing-song voice mid-conversation.
+        const ssml = await ssmlFor('Tumne "kal aaungi" bola tha na');
+        assert.ok(!ssml.includes('84%'), 'quoted speech stays in her normal voice');
+        assert.match(ssml, /92%|98%|108%/, 'a speaking tone was used');
+    });
+
+    it('still sings a real two-line song', async () => {
+        const ssml = await ssmlFor('Suno:\n"Chaudhvin ka chaand ho"\n"Ya aafataab ho"');
+        assert.match(ssml, /rate="84%"/, 'sung lines are slow');
+        assert.match(ssml, /700ms/, 'breath between lines');
+    });
+
+    it('never glues two words together across a quote', async () => {
+        // Regression: dropping the quote characters used to join the prose on
+        // either side, producing "tumnekal".
+        const ssml = await ssmlFor('Arre tumne "kal aaungi" bola tha');
+        assert.ok(!/तुमनेकल/.test(ssml), 'words stay separate');
+        assert.match(ssml, /तुमने\s/, 'a space was kept');
+    });
+
+    it('builds a future-tense aaunga without a broken glyph', async () => {
+        // "आ" already carries the "aa" vowel; adding the sign for "ऊ" on top of
+        // it produced "आूंगी", which a reader cannot parse.
+        const ssml = await ssmlFor('main kal aaungi ghar');
+        assert.match(ssml, /आऊंगी/);
+        assert.ok(!/आूंगी/.test(ssml), 'no stacked vowel sign');
+    });
+
+    it('keeps the older suffix readings working', async () => {
+        const ssml = await ssmlFor('hum jaate hai aur gaate hai');
+        assert.match(ssml, /जाते/, 'jaate');
+        assert.match(ssml, /गाते/, 'gaate');
+    });
+});
+
+// ---------------------------------------------------------------------------
+// Mood read from the room, not just the reply
+// ---------------------------------------------------------------------------
+
+describe('situational tone', () => {
+    const toneOf = async (message, reply) => {
+        const spy = spyPuter({ reply });
+        const app = boot(spy.factory);
+        await app.send(`${message} voice note bhejo`);
+        await new Promise((r) => setTimeout(r, 30));
+        const ssml = spy.calls.txt2speech.at(-1)?.text ?? '';
+        const match = ssml.match(/rate="(\d+%)"/);
+        return match ? match[1] : null;
+    };
+
+    it('goes quiet when he writes something heavy, whatever the reply looks like', async () => {
+        // A cheerful reply to a sad message is a misread; the voice must not
+        // follow it there.
+        const rate = await toneOf('aaj bahut udaas hu yaar', 'Arre mazaak karein?');
+        assert.equal(rate, '84%', 'used the close, slow tone');
+    });
+
+    it('does not go quiet when he is clearly happy', async () => {
+        const rate = await toneOf('aaj bahut khush hu yaar', 'Arre wah, batao!');
+        assert.notEqual(rate, '84%', 'stayed bright');
+    });
+
+    it('leaves an ordinary daytime message alone', async () => {
+        const rate = await toneOf('kya kar rahi ho aaj', 'Bas ghar pe hu yaar');
+        assert.equal(rate, '98%', 'neutral stays neutral');
+    });
+
+    it('uses the heavy-word list on real spellings', async () => {
+        for (const phrase of ['pareshan hu', 'mood kharab hai', 'thak gaya hu']) {
+            const rate = await toneOf(phrase, 'Acha suno, main hu na.');
+            assert.equal(rate, '84%', `${phrase} should soften her`);
+        }
+    });
+
+    it('does not fire on a word that merely contains a keyword', async () => {
+        // "dilip" contains "dil" and must not be read as heavy.
+        const rate = await toneOf('dilip se baat hui aaj', 'Acha, kya bola usne?');
+        assert.equal(rate, '98%');
+    });
+});
+
+// ---------------------------------------------------------------------------
+// Photos drawn from the scene she describes
+// ---------------------------------------------------------------------------
+
+describe('scene-aware photos', () => {
+    it('sends only the scene sentence to the image model', async () => {
+        const spy = spyPuter({
+            reply: 'Aaj main ghar pe hu, balcony me baithi hui. Tum kahan ho? [[selfie]]'
+        });
+        const app = boot(spy.factory);
+        // Burn the cooldown so a spontaneous selfie is allowed.
+        for (let i = 0; i < 5; i += 1) await app.send(`baat ${i}`);
+
+        assert.ok(spy.calls.txt2img.length > 0, 'a photo was requested');
+        const prompt = spy.calls.txt2img.at(-1).prompt;
+        assert.match(prompt, /balcony/i, 'the scene is in the prompt');
+        assert.ok(!prompt.includes('[['), 'markers never reach the image model');
+        assert.ok(!/Tum kahan ho/.test(prompt), 'her question is not part of the scene');
+    });
+
+    it('falls back to a plain portrait when there is no scene', async () => {
+        const spy = spyPuter({ reply: 'Haan jaan bolo na. [[selfie]]' });
+        const app = boot(spy.factory);
+        for (let i = 0; i < 5; i += 1) await app.send(`baat ${i}`);
+
+        const prompt = spy.calls.txt2img.at(-1).prompt;
+        assert.ok(!prompt.includes('[['), 'markers stripped even with no scene');
+        assert.match(prompt, /beautiful 22 year old Indian woman/i, 'identity prefix survives');
+    });
+
+    it('teaches her to include a place in the message', () => {
+        const source = readFileSync(new URL('../app.js', import.meta.url), 'utf8');
+        assert.match(source, /ghar pe hu, balcony me, shaam ki roshni/);
+    });
+});
