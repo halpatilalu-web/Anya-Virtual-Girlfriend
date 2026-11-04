@@ -132,8 +132,8 @@ Limits worth knowing:
 
 - **Provider-dependent.** `input_image` is documented for every Puter image
   provider, but *how closely* a model follows a reference varies. Text-to-image
-  models reject references outright — including the free Pollinations endpoint,
-  which is why a locked face cannot use the free route at all.
+  models reject references outright. `gpt-image-2`, the only route here, accepts
+  one, so the lock works.
 - **Storage is per browser.** The reference lives in `localStorage`, so it is not
   synced across devices and "Forget all" is the only wipe.
 - **A Drive folder cannot be read by the app.** Google Drive needs OAuth and a
@@ -295,7 +295,6 @@ Everything tunable lives at the top of `app.js`:
 | Constant | Purpose |
 | --- | --- |
 | `CHAT_MODEL` | Any model id from the [AI model directory](https://developer.puter.com/ai/models/). Defaults to `gpt-5.4-nano`. |
-| `freeImageUrl()` | Builds the free Pollinations request. `FREE_IMAGE_COOLDOWN_MS` (45 s) and `FREE_IMAGE_TIMEOUT_MS` live next to it. |
 | `IMAGE_OPTIONS` | Puter fallback only: `gpt-image-2`, `low`, 512×768. Pinned — do not swap in an expensive model. |
 | `VOICE_OPTIONS` | Polly, `hi-IN`, `Kajal`, `neural`. `hi-IN` is what makes Hindi read as Hindi. |
 | `SONG_PROSODY` | Tempo and break lengths used for sung lines. |
@@ -343,6 +342,22 @@ switching mid-sentence when the text mixes Devanagari and Latin. So:
 Matching is word-level, so `hai` inside `chair` is untouched. The word list covers
 the patterns Hinglish actually uses, not all of Hindi.
 
+### Ellipses are pauses, not words
+
+`"Haan.... phir kya hua?"` used to be spoken as **"dot dot dot dot"** — the engine
+reads punctuation it does not understand. `normaliseForSpeech()` runs before
+escaping and turns it into what it actually means:
+
+| Input | Becomes |
+| --- | --- |
+| `...`, `....`, `…`, `..` | a real `<break>`, 380–620 ms depending on tone |
+| emoji, dingbats, arrows | removed (the engine either spells or chokes on them) |
+| `!!!` | one `!` |
+
+Sentence breaks were also cut from 180–350 ms to **130–160 ms**, which is most of
+the difference between "reading sentences aloud" and "talking". A single full stop
+stays a sentence break; only 2+ dots become a hesitation.
+
 ### Singing
 
 There is no melody: TTS speaks, it does not sing. What it *can* do is pace.
@@ -364,30 +379,29 @@ The persona tells her *when* to sing (he asks, he quotes a line, the mood is sof
 a familiar line says it better than she could) and when **not** to (a serious
 problem, a health question, a fight — comfort first). Most messages are not songs.
 
-### Free images (default)
+### Images: one provider, pinned cheap
 
-The app ships **free by default**. Nothing is charged, no account is needed and
-no card is asked for: [Pollinations' Classic
-API](https://github.com/pollinations/pollinations/blob/master/APIDOCS.md) is
-documented as *"Free · no signup · rate-limited"* and takes the prompt in the URL.
+Pollinations was removed. It needed a 45-second gap per IP, stamped its logo on
+every image and returned worse results than the Puter model it replaced, and it
+was the source of the errors that showed up in the chat.
 
-The trade-offs are real, so the UI states them instead of hiding them:
+There is now exactly one image route:
 
-| Limit | What it means here |
-| --- | --- |
-| One image at a time, **≥45 s apart per IP** | A second request gets `402`. `freeImageWaitMs()` respects the cooldown, and the message says how many seconds to wait |
-| One model, max **768×768** | Fine for a chat bubble; not for a wallpaper |
-| Small **Pollinations logo** on every image | `nologo=true` is sent, but the docs say the logo stays on the free tier |
-| **No input images** | The locked face **cannot** be used. That is why locking a face flips the app to `Photos: Paid` rather than silently ignoring the lock |
-| Best effort | No uptime guarantee, so a failure falls through to the paid route |
+```js
+const IMAGE_OPTIONS = {
+    provider: 'openai',
+    model: 'gpt-image-2',
+    width: 512, height: 768, quality: 'low'
+};
+```
 
-`private=true` is sent on every request: by default this endpoint can publish
-generated images to a public feed, and a private photo of her should never end up
-there.
-
-There is no paid-route toggle to click by accident. Free is the only automatic
-path; a locked face is the one thing that needs the paid Puter call, and it is
-pinned to the cheapest model.
+- **~$0.0059 per image**, the cheapest measured option on Puter.
+- It accepts a reference photo, so the **face lock works** on it.
+- No paid-model selector exists in the UI, and no other provider appears in
+  `app.js` — nothing can move this to an expensive model by accident. Tests assert
+  both.
+- `IMAGE_FALLBACK_OPTIONS` retries the same prompt once with the generic options
+  if the model or tier is rejected, so a rejected tier still produces a photo.
 
 ### Image cost
 
@@ -401,10 +415,8 @@ free allowance goes furthest; images are the expensive part.
 | ~~`dola-seedream-5-0-pro`~~ | ~~~$0.045~~ | **Removed.** ~7x the price and one accidental selection was real money. `app.js` no longer contains the model or its provider |
 | `black-forest-labs/flux-schnell` | ~$0.003 | Cloudflare route always returns `1024x1024`, so the portrait framing is lost |
 
-The default route is the **free Pollinations endpoint, which costs nothing**. There
-is no paid-model selector any more: the only way to reach a paid call is to lock a
-face, because the free endpoint has no image-to-image. That call is pinned to the
-cheapest model, so it cannot quietly cost more than ~$0.006 a photo.
+One model, ~$0.006 a photo. There is no selector and no second provider, so the
+price cannot change without editing `IMAGE_OPTIONS`.
 
 `quality: '1K'` is pinned in `IMAGE_OPTIONS` (Pro's cheapest tier) along with an
 explicit `provider` and `model`, and a test enforces all three — an upstream

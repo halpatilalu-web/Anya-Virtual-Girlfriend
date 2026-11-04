@@ -307,279 +307,31 @@ describe('error handling', () => {
     });
 });
 
-describe('free image route', () => {
-    // User's ask: a free image model, no money at all. Pollinations Classic is
-    // documented as free/no-signup/rate-limited, so it is the default route.
-    const withFree = (impl) => (window) => {
-        window.__PRIYA_FREE_IMAGE__ = impl;
-        return { ai: { chat: async () => ({ message: { content: 'x' } }), txt2img: null } };
-    };
-
-    const freeImg = (window) => {
-        const img = window.document.createElement('img');
-        // jsdom never loads, so set the intrinsic size by hand.
-        Object.defineProperty(img, 'naturalWidth', { value: 512 });
-        img.src = 'https://image.pollinations.ai/prompt/x';
-        return img;
-    };
-
-    it('tries the free endpoint first, by default', async () => {
-        const seen = [];
-        const app = boot(withFree((prompt, url) => {
-            seen.push({ prompt, url });
-            return freeImg(app.window);
-        }));
-        await app.send('photo bhejo');
-
-        assert.equal(seen.length, 1, 'free route used');
-        assert.match(seen[0].url, /^https:\/\/image\.pollinations\.ai\/prompt\//);
-        assert.ok(app.$('.chat-image'), 'image rendered');
+describe('image provider', () => {
+    // Pollinations was removed at the user's request: it errored and produced
+    // worse images than the Puter model that was there before it.
+    it('has no second provider in the source', () => {
+        const source = readFileSync(new URL('../app.js', import.meta.url), 'utf8');
+        assert.ok(!/pollinations/i.test(source), 'Pollinations must be gone');
+        assert.ok(!/freeImageUrl|generateFreeImage/.test(source), 'free route helpers removed');
     });
 
-    it('asks for a private, safe, logo-free image', async () => {
-        let url = '';
-        const app = boot(withFree((prompt, u) => {
-            url = u;
-            return freeImg(app.window);
-        }));
+    it('calls the Puter model directly, with no free attempt first', async () => {
+        const spy = spyPuter();
+        const app = boot(spy.factory);
         await app.send('photo bhejo');
 
-        assert.match(url, /private=true/, 'never publish her to the public feed');
-        assert.match(url, /safe=true/);
-        assert.match(url, /nologo=true/);
-        assert.match(url, /seed=\d+/);
+        assert.equal(spy.calls.txt2img.length, 1);
+        assert.ok(app.$('.chat-image'));
     });
 
-    it('does not call the paid provider when free works', async () => {
-        const spy = spyPuter({ reply: 'x' });
-        const app = boot((window) => {
-            window.__PRIYA_FREE_IMAGE__ = () => freeImg(window);
-            return spy.factory(window);
-        });
-        await app.send('photo bhejo');
-
-        assert.equal(spy.calls.txt2img.length, 0, 'no paid call on the free path');
-    });
-
-    it('falls back to the paid route when free fails', async () => {
-        const spy = spyPuter({ reply: 'x' });
-        const app = boot((window) => {
-            window.__PRIYA_FREE_IMAGE__ = () => {
-                throw Object.assign(new Error('nope'), { code: 'free_unavailable' });
-            };
-            return spy.factory(window);
-        });
-        await app.send('photo bhejo');
-
-        assert.equal(spy.calls.txt2img.length, 1, 'paid retry happened');
-        assert.ok(app.$('.chat-image'), 'still got a photo');
-    });
-
-    it('a locked face is routed through Puter, because free has no references', async () => {
-        const spy = spyPuter({ reply: 'x' });
+    it('keeps the face lock usable, since Puter accepts references', async () => {
+        const spy = spyPuter();
         const app = boot(spy.factory);
         app.window.eval(`setIdentityImage('data:image/jpeg;base64,AAAA')`);
-
         await app.send('photo bhejo');
 
-        const { options } = spy.calls.txt2img[0].args;
-        assert.equal(options.input_image, 'data:image/jpeg;base64,AAAA');
-    });
-
-    it('has no paid-route toggle to click by accident', () => {
-        const app = boot(spyPuter().factory);
-        assert.equal(app.$('#route-btn'), null, 'the paid switch must be gone');
-    });
-
-    it('says what a locked face costs instead of hiding it', () => {
-        const app = boot(spyPuter().factory);
-        app.window.eval(`setIdentityImage('data:image/jpeg;base64,AAAA')`);
-
-        const state = app.$('#identity-state').textContent;
-        assert.match(state, /free model cannot use reference photos/i);
-        assert.match(state, /\$0\.006/, 'states the per-photo cost');
-    });
-});
-
-describe('voice fallback chain', () => {
-    // The user's report: pressing play showed "Awaaz set nahi ho payi" — the
-    // SSML request was rejected and there was no second route.
-    const appWithTts = (txt2speech) =>
-        boot((window) => ({
-            ai: {
-                chat: async () => ({ message: { content: 'Suno na ❤️ "halke halke" ❤️' } }),
-                txt2img: async () => null,
-                txt2speech
-            }
-        }));
-
-    const click = async (app) => {
-        app.$('.speak-btn').click();
-        await new Promise((r) => setTimeout(r, 80));
-    };
-
-    it('retries without SSML when the SSML request is rejected', async () => {
-        const seen = [];
-        const app = appWithTts(async (text, options) => {
-            seen.push(options);
-            if (options.ssml) {
-                throw Object.assign(new Error('bad_request'), { code: 'bad_request' });
-            }
-            const audio = app.window.document.createElement('audio');
-            audio.src = 'data:audio/mp3;base64,OK';
-            return audio;
-        });
-
-        await app.send('hi');
-        await click(app);
-
-        assert.equal(seen.length, 2, 'SSML then plain');
-        assert.ok(seen[0].ssml, 'first attempt is SSML');
-        assert.ok(!seen[1].ssml, 'retry drops ssml');
-        assert.equal(seen[1].provider, 'aws-polly', 'still the Indian English voice');
-    });
-
-    it('falls back to another provider when Polly fails outright', async () => {
-        const seen = [];
-        const app = appWithTts(async (text, options) => {
-            seen.push(options);
-            if (options.provider === 'aws-polly') {
-                throw Object.assign(new Error('field_invalid'), { code: 'field_invalid' });
-            }
-            const audio = app.window.document.createElement('audio');
-            audio.src = 'data:audio/mp3;base64,OK';
-            return audio;
-        });
-
-        await app.send('hi');
-        await click(app);
-
-        const last = seen.at(-1);
-        assert.equal(last.provider, 'openai');
-        assert.match(last.instructions, /Speak/, 'style is prose for OpenAI, not SSML');
-    });
-
-    it('shows only one error when every route fails', async () => {
-        const app = appWithTts(async () => {
-            throw Object.assign(new Error('boom'), { code: 'upstream_failed' });
-        });
-
-        await app.send('hi');
-        await click(app);
-
-        const notices = app.$$('.sys-bubble').filter((n) => /Voice/.test(n.textContent));
-        assert.equal(notices.length, 1, 'one notice, not one per attempt');
-    });
-
-    it('caches the route that worked, so a replay costs nothing', async () => {
-        let calls = 0;
-        const app = appWithTts(async (text, options) => {
-            calls += 1;
-            if (options.ssml) throw Object.assign(new Error('bad_request'), { code: 'bad_request' });
-            const audio = app.window.document.createElement('audio');
-            audio.src = 'data:audio/mp3;base64,OK';
-            return audio;
-        });
-
-        await app.send('hi');
-        await click(app);
-        const afterFirst = calls;
-
-        app.$('.speak-btn').click();
-        await new Promise((r) => setTimeout(r, 80));
-
-        assert.equal(calls, afterFirst, 'replay must hit the cache');
-    });
-
-    it('still produces a voice note bubble when SSML fails', async () => {
-        const app = appWithTts(async (text, options) => {
-            if (options.ssml) throw Object.assign(new Error('bad_request'), { code: 'bad_request' });
-            const audio = app.window.document.createElement('audio');
-            audio.src = 'data:audio/mp3;base64,OK';
-            return audio;
-        });
-
-        await app.send('song sing karke voice note bhejo');
-        await new Promise((r) => setTimeout(r, 120));
-
-        assert.ok(app.$('.voice-note'), 'audio bubble rendered via fallback');
-    });
-});
-
-describe('singing persona', () => {
-    const promptOf = (spy) => spy.calls.chat[0].messages[0].content;
-
-    it('forbids claiming she cannot send audio', async () => {
-        const spy = spyPuter();
-        const app = boot(spy.factory);
-        await app.send('hi');
-
-        const prompt = promptOf(spy);
-        assert.match(prompt, /never say you cannot send audio/i);
-        assert.match(prompt, /breaks the app/i);
-    });
-
-    it('tells her the audio is sent automatically', async () => {
-        const spy = spyPuter();
-        const app = boot(spy.factory);
-        await app.send('hi');
-        assert.match(promptOf(spy), /The audio is sent automatically/);
-    });
-
-    it('forbids padding a half-remembered song with invented lines', async () => {
-        const spy = spyPuter();
-        const app = boot(spy.factory);
-        await app.send('hi');
-        assert.match(promptOf(spy), /Never pad a half-remembered song with invented lines/);
-    });
-});
-
-describe('image model', () => {
-    it('uses the cheapest route, gpt-image-2 at low quality', async () => {
-        const spy = spyPuter();
-        const app = boot(spy.factory);
-        await app.send('photo bhejo');
-
-        const { options } = spy.calls.txt2img[0].args;
-        assert.equal(options.provider, 'openai');
-        assert.equal(options.model, 'gpt-image-2');
-        assert.equal(options.quality, 'low');
-    });
-
-    it('retries the generic route when the model is rejected', async () => {
-        const attempts = [];
-        const app = boot((window) => ({
-            ai: {
-                chat: async () => ({ message: { content: 'x' } }),
-                txt2img: async (prompt, testMode, options) => {
-                    attempts.push(options);
-                    if (attempts.length === 1) {
-                        throw Object.assign(new Error('bad_request'), { code: 'bad_request' });
-                    }
-                    const img = window.document.createElement('img');
-                    img.src = 'data:image/png;base64,OK';
-                    return img;
-                }
-            }
-        }));
-
-        await app.send('photo bhejo');
-
-        assert.equal(attempts.length, 2, 'one fallback attempt');
-        assert.match(attempts[1].quality, /low/, 'fallback uses the generic route');
-        assert.ok(app.$('.chat-image'), 'photo still rendered');
-    });
-
-    it('composes a scene prompt without dropping the locked identity', async () => {
-        const spy = spyPuter();
-        const app = boot(spy.factory);
-        app.window.eval(`setIdentityImage('data:image/jpeg;base64,AAAA');`);
-        await app.send('photo bhejo mandir me');
-
-        const [{ prompt, args }] = spy.calls.txt2img;
-        assert.match(prompt, /long black hair/, 'identity words kept');
-        assert.match(prompt, /mandir me/, 'scene kept');
-        assert.equal(args.options.input_image, 'data:image/jpeg;base64,AAAA', 'reference kept');
+        assert.equal(spy.calls.txt2img[0].args.options.input_image, 'data:image/jpeg;base64,AAAA');
     });
 });
 
@@ -620,11 +372,99 @@ describe('Hinglish pronunciation', () => {
         assert.match(spoken, /message/, 'English kept');
     });
 
+    it('covers the words that were still English-sounding', async () => {
+        // Every one of these came out Latin in a live run before the list was
+        // broadened: they are the highest-frequency Hinglish words.
+        const spoken = await speakOf('Kal milte hai, tab baat karenge');
+        for (const word of ['कल', 'मिलते', 'है', 'तब', 'बात', 'करेंगे']) {
+            assert.ok(spoken.includes(word), `${word} missing from: ${spoken}`);
+        }
+    });
+
+    it('reads "hu" as the Hindi hoon, not the English word', async () => {
+        const spoken = await speakOf('Main tumse pyaar karti hu');
+        assert.match(spoken, /हूँ/);
+        assert.ok(!/\bhu\b/i.test(spoken));
+    });
+
+    it('handles words the list does not contain, via suffix rules', async () => {
+        const spoken = await speakOf('Woh ghar jaate hue bola');
+        // "jaate"/"hue"/"bola" are inflections, not dictionary hits.
+        assert.match(spoken, /जाते|जाता/);
+        assert.match(spoken, /बोला/);
+    });
+
     it('keeps the chat in Hinglish even though speech is Devanagari', async () => {
         const app = boot(spyPuter({ reply: 'Mujhe pata hai ❤️' }).factory);
         await app.send('kaise ho');
 
         assert.match(app.text(), /Mujhe pata hai/, 'transcript untouched');
+    });
+});
+
+describe('ellipses are pauses, not words', () => {
+    // Reported: she said "dot dot dot dot" out loud whenever a reply had "....".
+    const speechOf = async (reply) => {
+        const spy = spyPuter({ reply });
+        const app = boot(spy.factory);
+        await app.send('hi');
+        await new Promise((r) => setTimeout(r, 40));
+        return spy.calls.txt2speech[0]?.text ?? '';
+    };
+
+    it('turns four dots into a pause', async () => {
+        const spoken = await speechOf('Haan.... phir kya hua?');
+        assert.ok(!/dot/i.test(spoken), 'never says "dot"');
+        assert.match(spoken, /<break time="\d+ms"\/>/, 'has a real pause');
+    });
+
+    it('turns the Unicode ellipsis into the same pause', async () => {
+        const spoken = await speechOf('Haan… phir kya hua?');
+        assert.ok(!/dot/i.test(spoken));
+        assert.match(spoken, /<break time="\d+ms"\/>/);
+    });
+
+    it('turns a double dot into a pause too', async () => {
+        const spoken = await speechOf('Haan.. phir kya hua?');
+        assert.ok(!/dot/i.test(spoken));
+    });
+
+    it('keeps a single full stop as a sentence break, not a pause', async () => {
+        const spoken = await speechOf('Haan. Phir kya hua?');
+        assert.ok(!/PAUSE/.test(spoken), 'no pause marker leaks');
+        // Short sentence breath, not the long ellipsis hang.
+        const ms = Number((spoken.match(/break time="(\d+)ms"/) || [])[1]);
+        assert.ok(ms <= 200, `sentence break should be short, got ${ms}`);
+    });
+
+    it('never spells emoji out', async () => {
+        const spoken = await speechOf('Haan ❤️ phir 🥺 batao');
+        assert.ok(!/heart|sad|face/i.test(spoken), 'emoji dropped, not described');
+    });
+
+    it('collapses repeated punctuation so it is one emphasis', async () => {
+        const spoken = await speechOf('Sach me!!!');
+        assert.match(spoken, /!<\/prosody>|!<break|!$/, 'one exclamation');
+        assert.ok(!/!!!/.test(spoken));
+    });
+
+    it('hangs longer on a sad ellipsis than an excited one', async () => {
+        // Compare the pause a tone assigns, not a stray sentence break: an
+        // excited reply has no ellipsis at all, so it has no pause to measure.
+        const app = boot(spyPuter().factory);
+        const tenderPause = app.window.eval("pauseBreak('tender')");
+        const excitedPause = app.window.eval("pauseBreak('excited')");
+        const ms = (tag) => Number(tag.match(/(\d+)ms/)[1]);
+
+        assert.ok(ms(tenderPause) > ms(excitedPause), 'sad ellipsis hangs longer');
+    });
+
+    it('does not chop every sentence with a long break any more', async () => {
+        // The old lookahead inserted 180-350ms after every sentence, which is the
+        // "reading sentences out" sound. It is now a short breath.
+        const spoken = await speechOf('Haan jaan. Main yahi hu. Batao na.');
+        const breaks = [...spoken.matchAll(/break time="(\d+)ms"/g)].map((m) => Number(m[1]));
+        assert.ok(breaks.every((b) => b <= 200), `sentence breaks stay short, got ${breaks}`);
     });
 });
 
@@ -655,9 +495,9 @@ describe('singing', () => {
         assert.match(spoken, /220ms/, 'comma lift');
     });
 
-    it('keeps prose at normal pace around the song', async () => {
-        const spoken = await singAndSpeak('Ye line sunो:\n"Tum hi ho"\nAb batao kaisi lagi?');
-        assert.match(spoken, /rate="100%"/, 'prose keeps the tone pace');
+    it('keeps prose at the tone pace around the song', async () => {
+        const spoken = await singAndSpeak('Ye line suno:\n"Tum hi ho"\nAb batao kaisi lagi?');
+        assert.match(spoken, /rate="98%"/, 'neutral prose pace');
         assert.match(spoken, /rate="84%"/, 'song is slower');
     });
 
