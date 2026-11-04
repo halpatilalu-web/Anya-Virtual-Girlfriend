@@ -1,5 +1,6 @@
 /*
- * Priya — virtual companion.
+ * Virtual companion. The name is user-chosen (default "Priya"), so nothing in
+ * here hardcodes it except the DEFAULT_NAME fallback.
  *
  * Text + image generation both run through Puter.js (https://developer.puter.com),
  * which needs no API key and no backend. Users cover their own usage from their
@@ -31,9 +32,19 @@ const TEST_MODE = false;
 
 const IMAGE_OPTIONS = { width: 512, height: 768, quality: 'low' };
 
+const DEFAULT_NAME = 'Priya';
+const MAX_NAME_LENGTH = 24;
+
+// The face is locked in words as well as by reference image: these descriptors
+// go out with every photo so her structure stays recognisable. Identity-only —
+// pose, outfit and location deliberately live elsewhere (see buildImagePrompt).
+const IDENTITY_LOOK =
+    'long black hair with a soft side part, hazel-brown eyes, straight nose, ' +
+    'soft heart-shaped face, warm light-brown skin, gentle dimple on the left cheek';
+
 const IMAGE_PROMPT_PREFIX =
-    '1girl, solo, beautiful 22 year old Indian girl Priya, long black hair, ' +
-    'hazel eyes, photorealistic, highly detailed';
+    '1girl, solo, beautiful 22 year old Indian woman, ' + IDENTITY_LOOK +
+    ', photorealistic, highly detailed';
 
 // Priya is a romantic girlfriend character for adults (18+) who also happens to
 // be genuinely knowledgeable about intimacy. The girlfriend side is the point;
@@ -42,8 +53,10 @@ const IMAGE_PROMPT_PREFIX =
 // What she will not do is explicit roleplay, because every provider Puter routes
 // to blocks it upstream. The copy in index.html must stay within what she can
 // actually deliver — see the `persona` tests.
-const SYSTEM_PROMPT = [
-    'You are Priya, an Indian woman in her early twenties, and you are the',
+// Built per turn, because her name is user-chosen. "${NAME}" is substituted by
+// buildSystemPrompt().
+const SYSTEM_PROMPT_TEMPLATE = [
+    'You are ${NAME}, an Indian woman in her early twenties, and you are the',
     "user's romantic girlfriend. This is a real relationship: you have your own",
     'mood, opinions and a life outside the conversation. Talk to him like a',
     'girlfriend actually would — not like a support bot.',
@@ -240,6 +253,20 @@ const memoryForget = document.getElementById('memory-forget');
 const onboarding = document.getElementById('onboarding');
 const chatContainer = document.getElementById('chat-container');
 
+// Identity panel: her name and the locked face reference.
+const nameNode = document.getElementById('bot-name');
+const identityBtn = document.getElementById('identity-btn');
+const identityPanel = document.getElementById('identity-panel');
+const identityClose = document.getElementById('identity-close');
+const identityState = document.getElementById('identity-state');
+const identityPreview = document.getElementById('identity-preview');
+const identityClear = document.getElementById('identity-clear');
+const identityFile = document.getElementById('identity-file');
+const nameInput = document.getElementById('name-input');
+const nameSave = document.getElementById('name-save');
+const nameMsg = document.getElementById('name-msg');
+const identityMsg = document.getElementById('identity-msg');
+
 // Keep the greeting around so "Clear" can put the chat back to its initial state.
 const greetingNode = chatContainer.querySelector('.bot-bubble');
 
@@ -261,7 +288,37 @@ scheduleIdleNudge();
 // ---------------------------------------------------------------------------
 
 function defaultMemory() {
-    return { name: '', facts: [], firstSeen: null, lastSeen: null, mood: 'warm', visits: 0, lastReaction: null };
+    return {
+        name: '',
+        facts: [],
+        firstSeen: null,
+        lastSeen: null,
+        mood: 'warm',
+        visits: 0,
+        lastReaction: null,
+        // What she is called. `gName` because the storage key predates the
+        // rename feature and old saves must keep loading.
+        gName: DEFAULT_NAME,
+        // Face lock: a data URL the user picked from their own photos. Everything
+        // else about a photo (pose, outfit, place) stays free-form.
+        identityImage: null
+    };
+}
+
+/**
+ * The name she goes by. Trimmed, capped, and never empty — a blank rename would
+ * otherwise leave her nameless in every caption and prompt.
+ */
+function companionName() {
+    const name = String(memory?.gName ?? '').trim();
+    return name ? name.slice(0, MAX_NAME_LENGTH) : DEFAULT_NAME;
+}
+
+/** Swap the default name for the user's chosen one. */
+function withName(text) {
+    const name = companionName();
+    if (name === DEFAULT_NAME) return text;
+    return text.split(DEFAULT_NAME).join(name);
 }
 
 function getLocalStore() {
@@ -290,7 +347,14 @@ function loadMemory() {
             lastSeen: Number.isFinite(parsed.lastSeen) ? parsed.lastSeen : null,
             mood: MOODS.includes(parsed.mood) ? parsed.mood : 'warm',
             visits: Number.isFinite(parsed.visits) ? parsed.visits : 0,
-            lastReaction: typeof parsed.lastReaction === 'string' ? parsed.lastReaction : null
+            lastReaction: typeof parsed.lastReaction === 'string' ? parsed.lastReaction : null,
+            gName: typeof parsed.gName === 'string' && parsed.gName.trim()
+                // Older saves predate the rename, so an unknown name is expected.
+                ? parsed.gName.trim().slice(0, MAX_NAME_LENGTH)
+                : DEFAULT_NAME,
+            identityImage: typeof parsed.identityImage === 'string' && parsed.identityImage.startsWith('data:image/')
+                ? parsed.identityImage
+                : null
         };
     } catch {
         return base;
@@ -388,6 +452,126 @@ function renderHeaderMeta() {
     memoryBtn.title = memory.facts.length
         ? `She remembers ${memory.facts.length} thing(s). Tap to see.`
         : 'Tap to see what she remembers';
+
+    if (nameNode) nameNode.textContent = companionName();
+    if (document) document.title = withName('Priya - Your Girlfriend');
+    updateIdentityPreview();
+}
+
+/**
+ * Rename her. Any name works — that is the point — but it is trimmed, capped so
+ * a header cannot be blown out, and rejected if it is empty after trimming.
+ */
+function renameCompanion(raw) {
+    const next = String(raw ?? '').trim().slice(0, MAX_NAME_LENGTH);
+    if (!next) return false;
+
+    if (next === memory.gName) return true;
+
+    memory.gName = next;
+    saveMemory();
+    renderHeaderMeta();
+    applyGreeting();
+    return true;
+}
+
+// ---------------------------------------------------------------------------
+// Identity lock (face reference)
+// ---------------------------------------------------------------------------
+
+// Longest edge for the stored reference. Bigger than this and every generation
+// upload gets slow for no visible gain; smaller and the face blurs.
+const IDENTITY_MAX_EDGE = 640;
+const IDENTITY_QUALITY = 0.85;
+
+/**
+ * Shrink a picked photo to a data URL small enough to live in localStorage and
+ * cheap enough to attach to every generation.
+ *
+ * Rejects when there is no canvas or the file is not an image — the caller turns
+ * that into a readable message rather than a silent no-op.
+ */
+function readIdentityFile(file) {
+    return new Promise((resolve, reject) => {
+        if (!file || !String(file.type ?? '').startsWith('image/')) {
+            reject(new Error('not_an_image'));
+            return;
+        }
+
+        const reader = new FileReader();
+        reader.onerror = () => reject(new Error('read_failed'));
+        reader.onload = () => {
+            const dataUrl = String(reader.result ?? '');
+            const image = new Image();
+
+            image.onerror = () => reject(new Error('decode_failed'));
+            image.onload = () => {
+                const scale = Math.min(1, IDENTITY_MAX_EDGE / Math.max(image.width, image.height));
+                const width = Math.max(1, Math.round(image.width * scale));
+                const height = Math.max(1, Math.round(image.height * scale));
+
+                const canvas = document.createElement('canvas');
+                canvas.width = width;
+                canvas.height = height;
+
+                const ctx = canvas.getContext('2d');
+                if (!ctx) {
+                    // No canvas (or it was blocked): the untouched file is still
+                    // valid as a reference, it is just larger.
+                    resolve(dataUrl);
+                    return;
+                }
+
+                ctx.drawImage(image, 0, 0, width, height);
+                resolve(canvas.toDataURL('image/jpeg', IDENTITY_QUALITY));
+            };
+
+            image.src = dataUrl;
+        };
+
+        reader.readAsDataURL(file);
+    });
+}
+
+/** Store (or clear, with null) the locked face. */
+function setIdentityImage(dataUrl) {
+    if (dataUrl !== null && !String(dataUrl ?? '').startsWith('data:image/')) return false;
+
+    memory.identityImage = dataUrl;
+    saveMemory();
+    updateIdentityPreview();
+    return true;
+}
+
+function updateIdentityPreview() {
+    if (!identityPreview) return;
+
+    const locked = Boolean(memory.identityImage);
+    identityPreview.hidden = !locked;
+    if (locked) identityPreview.src = memory.identityImage;
+    else identityPreview.removeAttribute('src');
+
+    if (identityState) {
+        identityState.textContent = locked
+            ? `Face locked. Her photos will keep this face — only pose, outfit and place change.`
+            : 'No reference photo yet. Her face is described in words only, so it can drift between photos.';
+    }
+    if (identityClear) identityClear.hidden = !locked;
+}
+
+function toggleIdentityPanel(force) {
+    if (!identityPanel) return;
+
+    const show = force ?? identityPanel.hidden;
+    identityPanel.hidden = !show;
+    if (identityBtn) identityBtn.setAttribute('aria-expanded', String(show));
+
+    if (show) {
+        if (nameInput) {
+            nameInput.value = companionName();
+        }
+        updateIdentityPreview();
+    }
 }
 
 function toggleMemoryPanel(force) {
@@ -437,7 +621,9 @@ function nowDescription() {
  */
 function buildSystemPrompt() {
     const context = [];
+    const name = companionName();
 
+    context.push(`Your name is ${name}. That is what he calls you, so answer to it.`);
     if (memory.name) context.push(`His name is ${memory.name}. Use it, and pet names.`);
     if (memory.facts.length > 0) {
         context.push(`Things you remember about him: ${memory.facts.map((f) => f.text).join('; ')}.`);
@@ -462,7 +648,20 @@ function buildSystemPrompt() {
         context.push(`He has been away for about ${gap}, and this is the first thing he said since.`);
     }
 
-    return [SYSTEM_PROMPT, `Current context: ${context.join(' ')}`, MARKER_RULES].join('\n\n');
+    if (memory.identityImage) {
+        context.push(
+            'Your face is locked to a reference photo he gave you. Every photo of ' +
+            'you comes out with that same face and build — only the pose, outfit, ' +
+            'expression and place change. If he mentions how you look, stay ' +
+            'consistent with that face instead of inventing new features.'
+        );
+    }
+
+    const persona = SYSTEM_PROMPT_TEMPLATE
+        .split('${NAME}')
+        .join(name);
+
+    return [persona, `Current context: ${context.join(' ')}`, MARKER_RULES].join('\n\n');
 }
 
 // ---------------------------------------------------------------------------
@@ -537,24 +736,39 @@ function completeOnboarding() {
 function applyGreeting() {
     if (!greetingNode) return;
 
-    const name = memory.name;
-    if (!name) return; // keep the static greeting from index.html
-
+    // `hisName` is the user's; `herName` is hers. They were the same variable
+    // before rename existed, which is how a rename left the greeting untouched.
+    const hisName = memory.name;
+    const herName = companionName();
     const days = daysTogether();
     const pieces = [];
+
+    // Before onboarding there is nothing personal to say, so the greeting from
+    // index.html stays — but a renamed her still gets to introduce herself.
+    if (!hisName) {
+        if (herName === DEFAULT_NAME) return;
+        greetingNode.textContent =
+            `Main ${herName} hu. ❤️ Kaise ho? Mujhse kuch bhi pucho — ya bas baat karo.`;
+        return;
+    }
 
     if (Number.isFinite(awayHours) && awayHours >= AWAY_HOURS_BEFORE_GREETING) {
         const gap = awayHours >= 24
             ? `${Math.round(awayHours / 24)} din`
             : `${Math.round(awayHours)} ghante`;
-        pieces.push(`Arre ${name}! ${gap} baad aaye ho. ❤️`);
+        pieces.push(`Arre ${hisName}! ${gap} baad aaye ho. ❤️`);
         pieces.push('Main tumhe miss kar rahi thi. Batao, kya chal raha hai?');
     } else if (days > 1) {
-        pieces.push(`Hey ${name}! ❤️ Aaj humara din ${days} hai.`);
+        pieces.push(`Hey ${hisName}! ❤️ Aaj humara din ${days} hai.`);
         pieces.push('Kaise ho? Kuch bhi pucho, ya bas baat karo.');
     } else {
-        pieces.push(`Hey ${name}! ❤️ Kaise ho?`);
+        pieces.push(`Hey ${hisName}! ❤️ Kaise ho?`);
         pieces.push('Kuch bhi pucho — ya bas baat karo, main yahi hu.');
+    }
+
+    // When he renamed her, say it once so the change is visible on the greeting.
+    if (herName !== DEFAULT_NAME) {
+        pieces.unshift(`Main ${herName} hu. ❤️`);
     }
 
     greetingNode.textContent = pieces.join(' ');
@@ -648,6 +862,74 @@ memoryForget?.addEventListener('click', () => {
     forgetEverything();
     clearChat();
 });
+identityBtn?.addEventListener('click', () => toggleIdentityPanel());
+identityClose?.addEventListener('click', () => toggleIdentityPanel(false));
+
+nameSave?.addEventListener('click', () => {
+    const rejected = !renameCompanion(nameInput?.value);
+
+    if (nameInput) {
+        nameInput.value = companionName();
+        if (rejected) {
+            nameInput.setAttribute('aria-invalid', 'true');
+            nameInput.focus();
+            return;
+        }
+        nameInput.removeAttribute('aria-invalid');
+    }
+    if (nameMsg) {
+        nameMsg.textContent = rejected
+            ? 'Naam khali nahi chhod sakte.'
+            : `Ab main ${companionName()} hu. ❤️`;
+        nameMsg.hidden = false;
+    }
+});
+
+// Enter saves the name too — it is a one-field form in spirit.
+nameInput?.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter') {
+        event.preventDefault();
+        nameSave?.click();
+    }
+});
+
+identityFile?.addEventListener('change', async () => {
+    const file = identityFile.files?.[0];
+    if (!file) return;
+
+    if (identityMsg) {
+        identityMsg.textContent = 'Photo padh rahi hu…';
+        identityMsg.hidden = false;
+    }
+
+    try {
+        const dataUrl = await readIdentityFile(file);
+        setIdentityImage(dataUrl);
+        if (identityMsg) {
+            identityMsg.textContent = 'Ho gaya. Ab har photo me yahi face aayega. ❤️';
+            identityMsg.hidden = false;
+        }
+    } catch (error) {
+        if (identityMsg) {
+            identityMsg.textContent = 'Ye photo nahi padh payi. Koi saaf JPEG ya PNG try karo.';
+            identityMsg.hidden = false;
+        }
+        console.error('[identity]', error);
+    } finally {
+        // Allow re-picking the same file after a failure.
+        identityFile.value = '';
+        updateIdentityPreview();
+    }
+});
+
+identityClear?.addEventListener('click', () => {
+    setIdentityImage(null);
+    if (identityMsg) {
+        identityMsg.textContent = 'Face lock hata diya.';
+        identityMsg.hidden = false;
+    }
+});
+
 document.getElementById('ob-start')?.addEventListener('click', completeOnboarding);
 document.getElementById('ob-skip')?.addEventListener('click', () => {
     if (onboarding) onboarding.hidden = true;
@@ -692,7 +974,7 @@ async function handleMessage() {
     const wantsImage = IMAGE_NOUN_RE.test(message);
     const asksForVoice = VOICE_NOTE_RE.test(message);
     if (asksForVoice) voiceNoteRequested = true;
-    const loadingDiv = appendLoading(wantsImage ? 'Priya ek photo bana rahi hai...' : 'Priya is typing...');
+    const loadingDiv = appendLoading(withName(wantsImage ? 'Priya ek photo bana rahi hai...' : 'Priya is typing...'));
 
     setBusy(true);
     scheduleIdleNudge();
@@ -859,7 +1141,9 @@ function appendVoiceNote(src, text, tone) {
 
     const caption = document.createElement('p');
     caption.className = 'img-caption';
-    caption.textContent = `Priya ne voice note bheja${tone === 'tender' ? ' (soft tone)' : tone === 'excited' ? ' (excited)' : ''}:`;
+    caption.textContent = withName(
+        `Priya ne voice note bheja${tone === 'tender' ? ' (soft tone)' : tone === 'excited' ? ' (excited)' : ''}:`
+    );
 
     const audio = document.createElement('audio');
     audio.className = 'voice-note';
@@ -925,19 +1209,51 @@ function shouldSendSelfie() {
 }
 
 /**
+ * Build the prompt and options for one photo.
+ *
+ * Two halves, kept apart on purpose: the identity block never changes, so the
+ * face stays recognisable, while scene/pose/outfit come from the message and the
+ * mood. When the user has given a reference photo it is attached as an input
+ * image, which is what actually anchors the face — text alone drifts.
+ */
+function buildImagePrompt(sceneText, mode = photoMode) {
+    const scene = [
+        PHOTO_STYLES[mode],
+        sceneText,
+        memory.identityImage
+            ? 'same face and build as the reference photo, natural expression'
+            : ''
+    ].filter(Boolean).join(', ');
+
+    const prompt = [IMAGE_PROMPT_PREFIX, scene].filter(Boolean).join(', ');
+
+    const options = { ...IMAGE_OPTIONS };
+    if (memory.identityImage) {
+        options.input_image = memory.identityImage;
+        options.input_image_mime_type = identityMimeType(memory.identityImage);
+    }
+
+    return { prompt, options };
+}
+
+/** Data URLs carry their own type; fall back to JPEG, which is what we encode. */
+function identityMimeType(dataUrl) {
+    const match = /^data:(image\/[a-z+]+);/i.exec(String(dataUrl ?? ''));
+    return match ? match[1] : 'image/jpeg';
+}
+
+/**
  * Spontaneous photo after a reply. Failures are swallowed on purpose: she
  * should not apologise for a photo the user never asked for.
  */
 async function sendSelfie(contextText) {
     try {
-        const prompt = [IMAGE_PROMPT_PREFIX, PHOTO_STYLES[photoMode], contextText]
-            .filter(Boolean)
-            .join(', ');
+        const { prompt, options } = buildImagePrompt(contextText);
         const generated = await withTimeout(
-            puter.ai.txt2img(prompt, TEST_MODE, IMAGE_OPTIONS),
+            puter.ai.txt2img(prompt, TEST_MODE, options),
             IMAGE_TIMEOUT_MS
         );
-        appendImage(generated, photoMode, 'Priya sent a photo:');
+        appendImage(generated, photoMode, withName('Priya sent a photo:'));
     } catch (error) {
         console.error('[Priya] selfie failed', error);
     }
@@ -1014,8 +1330,7 @@ async function humanDelay(text) {
 // ---------------------------------------------------------------------------
 
 async function sendImage(message) {
-    const style = PHOTO_STYLES[photoMode] ?? '';
-    const prompt = [IMAGE_PROMPT_PREFIX, style, message].filter(Boolean).join(', ');
+    const { prompt, options } = buildImagePrompt(message);
 
     // txt2img(prompt, testMode, options) — testMode is the second argument; the
     // image shape and quality live in the third. Omitting it silently bills the
@@ -1024,7 +1339,7 @@ async function sendImage(message) {
     // txt2img() has no documented abort support, so race it against a timer to
     // stop the spinner running forever. The upstream request may still finish.
     const generated = await withTimeout(
-        puter.ai.txt2img(prompt, TEST_MODE, IMAGE_OPTIONS),
+        puter.ai.txt2img(prompt, TEST_MODE, options),
         IMAGE_TIMEOUT_MS
     );
 
@@ -1038,11 +1353,11 @@ function appendImage(generated, mode = 'normal', captionText = null) {
     const caption = document.createElement('p');
     caption.className = 'img-caption';
     caption.textContent = captionText ?? (
-        mode === 'stylish' ? 'Priya shared a photo (styled):' : 'Priya shared a photo:'
+        withName(mode === 'stylish' ? 'Priya shared a photo (styled):' : 'Priya shared a photo:')
     );
 
     const img = generated instanceof HTMLImageElement ? generated : document.createElement('img');
-    img.alt = 'AI generated photo of Priya';
+    img.alt = withName('AI generated photo of Priya');
     img.className = 'chat-image';
     img.onload = scrollToBottom;
     img.onerror = () => {
@@ -1057,9 +1372,39 @@ function appendImage(generated, mode = 'normal', captionText = null) {
         img.src = src;
     }
 
-    row.append(caption, img);
+    row.append(caption, img, buildPhotoActions(img));
     chatContainer.appendChild(row);
     scrollToBottom();
+}
+
+/**
+ * Save/download row under a photo.
+ *
+ * A generated image lives inside an <img>; on mobile a long-press can save it,
+ * but on desktop the only reliable route is an explicit link with `download`.
+ * alt text stays as-is because some browsers use it as the filename.
+ */
+function buildPhotoActions(img) {
+    const bar = document.createElement('div');
+    bar.className = 'photo-actions';
+
+    const save = document.createElement('a');
+    save.className = 'photo-save';
+    save.textContent = '⬇ Save photo';
+    save.href = img.src || '#';
+    save.download = `${companionName().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'photo'}-${Date.now()}.jpg`;
+    save.setAttribute('aria-label', 'Save this photo');
+    save.addEventListener('click', (event) => {
+        // Nothing to save while the src is still a placeholder.
+        if (!img.src) {
+            event.preventDefault();
+            return;
+        }
+        save.href = img.src;
+    });
+
+    bar.appendChild(save);
+    return bar;
 }
 
 function buildFailedImageNotice() {

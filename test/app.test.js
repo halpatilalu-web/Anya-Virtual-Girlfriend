@@ -157,7 +157,8 @@ describe('images', () => {
         await app.send('apni photo bhejo');
 
         const [{ prompt, args }] = spy.calls.txt2img;
-        assert.match(prompt, /22 year old Indian girl Priya/);
+        assert.match(prompt, /22 year old Indian woman/);
+        assert.match(prompt, /long black hair/);
         assert.match(prompt, /apni photo bhejo/);
 
         // txt2img(prompt, testMode): the cost settings live in the options
@@ -291,6 +292,202 @@ describe('error handling', () => {
         await app.send('hi');
 
         assert.ok(app.text().includes('AI service load nahi hui'));
+    });
+});
+
+describe('her name', () => {
+    const rename = (app, value) => {
+        app.$('#identity-btn').click();
+        app.$('#name-input').value = value;
+        app.$('#name-save').click();
+    };
+
+    it('opens the identity panel from the header', () => {
+        const app = boot(spyPuter().factory);
+        assert.ok(app.$('#identity-panel').hidden, 'starts hidden');
+
+        app.$('#identity-btn').click();
+        assert.equal(app.$('#identity-panel').hidden, false);
+        assert.equal(app.$('#bot-name').textContent, 'Priya');
+    });
+
+    it('renames her and updates the header', () => {
+        const app = boot(spyPuter().factory);
+        rename(app, 'Ananya');
+
+        assert.equal(app.$('#bot-name').textContent, 'Ananya');
+        assert.ok(app.$('#identity-panel').textContent.includes('Ananya'));
+    });
+
+    it('carries the new name into the next prompt', async () => {
+        const spy = spyPuter();
+        const app = boot(spy.factory);
+        rename(app, 'Ananya');
+        await app.send('kaise ho');
+
+        const system = spy.calls.chat[0].messages[0].content;
+        assert.match(system, /Your name is Ananya/);
+        assert.match(system, /You are Ananya/);
+        assert.ok(!/You are Priya/.test(system), 'default name must be gone');
+    });
+
+    it('uses the name in photo captions', async () => {
+        const spy = spyPuter();
+        const app = boot(spy.factory);
+        rename(app, 'Ananya');
+        await app.send('photo bhejo');
+
+        assert.ok(app.text().includes('Ananya shared a photo'));
+        assert.ok(!app.text().includes('Priya shared a photo'));
+    });
+
+    it('refuses an empty name but keeps the old one', async () => {
+        const app = boot(spyPuter().factory);
+        rename(app, 'Ananya');
+        rename(app, '   ');
+
+        assert.equal(app.$('#bot-name').textContent, 'Ananya');
+    });
+
+    it('caps a very long name instead of breaking the header', () => {
+        const app = boot(spyPuter().factory);
+        rename(app, 'A'.repeat(80));
+
+        assert.equal(app.$('#bot-name').textContent.length, 24);
+    });
+
+    it('introduces herself by the new name when there is no user name yet', () => {
+        const app = boot(spyPuter().factory);
+        rename(app, 'Ananya');
+
+        const greeting = app.$('[data-greeting]').textContent;
+        assert.match(greeting, /Main Ananya hu/);
+        assert.ok(!greeting.includes('Priya'));
+    });
+
+    it('remembers the name across a reload', async () => {
+        const app = boot(spyPuter().factory);
+        rename(app, 'Meera');
+
+        const stored = JSON.parse(app.window.localStorage.getItem('priya.memory.v1'));
+        assert.equal(stored.gName, 'Meera');
+    });
+});
+
+describe('identity lock', () => {
+    const lockFace = (app, dataUrl) => {
+        app.window.eval(`setIdentityImage(${JSON.stringify(dataUrl)});`);
+    };
+
+    it('says the face is not locked yet', () => {
+        const app = boot(spyPuter().factory);
+        app.$('#identity-btn').click();
+
+        assert.match(app.$('#identity-state').textContent, /No reference photo/);
+        assert.ok(app.$('#identity-clear').hidden);
+    });
+
+    it('attaches the locked face as an input image', async () => {
+        const spy = spyPuter();
+        const app = boot(spy.factory);
+        lockFace(app, 'data:image/jpeg;base64,AAAA');
+        await app.send('photo bhejo');
+
+        const { options } = spy.calls.txt2img[0].args;
+        assert.equal(options.input_image, 'data:image/jpeg;base64,AAAA');
+        assert.equal(options.input_image_mime_type, 'image/jpeg');
+    });
+
+    it('sends no input image when the face is not locked', async () => {
+        const spy = spyPuter();
+        const app = boot(spy.factory);
+        await app.send('photo bhejo');
+
+        assert.ok(!('input_image' in spy.calls.txt2img[0].args.options));
+    });
+
+    it('keeps identity words stable while the scene changes', async () => {
+        const spy = spyPuter();
+        const app = boot(spy.factory);
+
+        await app.send('photo bhejo beach pe');
+        await app.send('photo bhejo ghar pe');
+
+        const [first, second] = spy.calls.txt2img.map((c) => c.prompt);
+        assert.match(first, /long black hair/);
+        assert.match(second, /long black hair/);
+        assert.match(first, /beach pe/);
+        assert.match(second, /ghar pe/);
+        // The identity block is byte-identical; only the scene differs.
+        const identity = '1girl, solo, beautiful 22 year old Indian woman';
+        assert.ok(first.startsWith(identity) && second.startsWith(identity));
+    });
+
+    it('tells the model her face is locked', async () => {
+        const spy = spyPuter();
+        const app = boot(spy.factory);
+        lockFace(app, 'data:image/png;base64,BBBB');
+        await app.send('kaise ho');
+
+        assert.match(spy.calls.chat[0].messages[0].content, /face is locked to a reference photo/i);
+    });
+
+    it('removes the lock and stops sending the reference', async () => {
+        const spy = spyPuter();
+        const app = boot(spy.factory);
+        lockFace(app, 'data:image/jpeg;base64,AAAA');
+
+        app.$('#identity-btn').click();
+        app.$('#identity-clear').click();
+
+        await app.send('photo bhejo');
+        assert.ok(!('input_image' in spy.calls.txt2img[0].args.options));
+        assert.match(app.$('#identity-state').textContent, /No reference photo/);
+    });
+
+    it('persists the locked face in memory', () => {
+        const app = boot(spyPuter().factory);
+        lockFace(app, 'data:image/jpeg;base64,AAAA');
+
+        const stored = JSON.parse(app.window.localStorage.getItem('priya.memory.v1'));
+        assert.equal(stored.identityImage, 'data:image/jpeg;base64,AAAA');
+    });
+
+    it('ignores a non-image value', async () => {
+        const spy = spyPuter();
+        const app = boot(spy.factory);
+
+        lockFace(app, 'javascript:alert(1)');
+
+        // Still unlocked: no preview, and no reference attached to a generation.
+        assert.ok(app.$('#identity-clear').hidden);
+        await app.send('photo bhejo');
+        assert.ok(!('input_image' in spy.calls.txt2img[0].args.options));
+    });
+});
+
+describe('saving photos', () => {
+    it('puts a download link under every generated photo', async () => {
+        const spy = spyPuter();
+        const app = boot(spy.factory);
+        await app.send('photo bhejo');
+
+        const link = app.$('.photo-save');
+        assert.ok(link, 'save control should exist');
+        assert.equal(link.tagName, 'A');
+        assert.ok(link.hasAttribute('download'), 'must download, not navigate');
+        assert.match(link.getAttribute('href'), /^data:image\/png/, 'points at the image bytes');
+        assert.match(link.textContent, /Save photo/);
+    });
+
+    it('names the download after her', async () => {
+        const app = boot(spyPuter().factory);
+        app.$('#identity-btn').click();
+        app.$('#name-input').value = 'Ananya Das';
+        app.$('#name-save').click();
+
+        await app.send('photo bhejo');
+        assert.match(app.$('.photo-save').download, /^ananya-das-/);
     });
 });
 
